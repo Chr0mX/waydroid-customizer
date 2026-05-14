@@ -75,8 +75,9 @@ main() {
         *) die "Unknown target: $target" ;;
     esac
 
-    # Write a build manifest
-    local manifest="${OUTPUT_DIR}/manifest.json"
+    # Write a build manifest named per-variant to avoid asset-name collisions when
+    # both vanilla and gapps artifacts are uploaded to the same GitHub release.
+    local manifest="${OUTPUT_DIR}/manifest-${target}.json"
     python3 - "$OUTPUT_DIR" "$UPSTREAM_DATE" "$target" > "$manifest" <<'EOF'
 import sys, os, json, hashlib, glob
 

@@ -139,7 +139,7 @@ jobs:
           path: |
             work/output/*.zip
             work/output/*.sha256
-            work/output/manifest.json
+            work/output/manifest-*.json
           retention-days: 30
 
   # ─── Build GAPPS ─────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ jobs:
           path: |
             work/output/*.zip
             work/output/*.sha256
-            work/output/manifest.json
+            work/output/manifest-*.json
           retention-days: 30
 
   # ─── Publish release ──────────────────────────────────────────────────────────
@@ -261,4 +261,4 @@ jobs:
           gh release create "$TAG" \
             --title "$TITLE" \
             --notes "$NOTES" \
-            $(find release-artifacts -type f \( -name '*.zip' -o -name '*.sha256' -o -name 'manifest.json' \) | sort | xargs)
+            $(find release-artifacts -type f \( -name '*.zip' -o -name '*.sha256' -o -name 'manifest-*.json' \) | sort | xargs)

@@ -26,11 +26,11 @@ _load_config images.conf
 # ─── Logging ─────────────────────────────────────────────────────────────────
 _log_ts() { date '+%H:%M:%S'; }
 
-log_info()  { echo "[INFO]  $(_log_ts) $*"; }
-log_ok()    { echo "[OK]    $(_log_ts) $*"; }
+log_info()  { echo "[INFO]  $(_log_ts) $*" >&2; }
+log_ok()    { echo "[OK]    $(_log_ts) $*" >&2; }
 log_warn()  { echo "[WARN]  $(_log_ts) $*" >&2; }
 log_error() { echo "[ERROR] $(_log_ts) $*" >&2; }
-log_step()  { echo; echo "══════════════════════════════════════════════"; echo "  $*"; echo "══════════════════════════════════════════════"; }
+log_step()  { echo >&2; echo "══════════════════════════════════════════════" >&2; echo "  $*" >&2; echo "══════════════════════════════════════════════" >&2; }
 
 die() { log_error "$*"; exit 1; }
 

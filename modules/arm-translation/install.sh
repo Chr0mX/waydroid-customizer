@@ -130,7 +130,7 @@ _inject_ndk_system() {
 _inject_binfmt_system() {
     local root="$1" backend="$2"
     log_info "Installing binfmt_misc rules…"
-    mkdir -p "${root}/etc/binfmt_misc"
+    mkdir -p "$(_image_realpath "$root" "etc/binfmt_misc")"
     inject_file "${MODULE_DIR}/binfmt/arm_dyn"   "$root" "etc/binfmt_misc/arm_dyn"   0644 root:root
     inject_file "${MODULE_DIR}/binfmt/arm64_dyn" "$root" "etc/binfmt_misc/arm64_dyn" 0644 root:root
     inject_file "${MODULE_DIR}/binfmt/arm_exe"   "$root" "etc/binfmt_misc/arm_exe"   0644 root:root

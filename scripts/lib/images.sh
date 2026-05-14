@@ -74,6 +74,32 @@ _unmount_all_registered() {
     done
 }
 
+# ─── Symlink-aware path resolution inside an image ──────────────────────────
+# _image_realpath <image_root> <rel_path>
+#
+# Walks rel_path component by component within image_root.
+# Absolute symlinks (e.g. /etc → /system/etc) are re-rooted to image_root
+# instead of the host root, so the resolved path stays inside the mount.
+# Returns the real host-filesystem path for the destination.
+_image_realpath() {
+    local image_root="$1"
+    local rel_path="${2#/}"   # strip leading slash
+    python3 -c "
+import sys, os
+root, path = sys.argv[1], sys.argv[2]
+cur = root
+for part in [p for p in path.split('/') if p]:
+    cand = os.path.join(cur, part)
+    if os.path.islink(cand):
+        t = os.readlink(cand)
+        cur = os.path.join(root, t.lstrip('/')) if os.path.isabs(t) \
+              else os.path.normpath(os.path.join(os.path.dirname(cand), t))
+    else:
+        cur = cand
+print(cur)
+" "$image_root" "$rel_path"
+}
+
 # ─── File injection into a mounted image ─────────────────────────────────────
 # inject_file <src> <image_root> <dest_path_inside_image> [mode] [owner:group]
 inject_file() {
@@ -83,8 +109,15 @@ inject_file() {
     local mode="${4:-0644}"
     local owner="${5:-root:root}"
 
-    local dest="${image_root}/${dest_rel#/}"
-    mkdir -p "$(dirname "$dest")"
+    # Resolve the destination through any absolute symlinks (e.g. /etc → /system/etc
+    # in system-as-root images).  Plain mkdir -p fails with "File exists" when a
+    # path component is a dangling absolute symlink because stat() returns ENOENT
+    # for the symlink target while lstat() reports EEXIST for the symlink itself.
+    local dest_dir
+    dest_dir="$(_image_realpath "$image_root" "$(dirname "$dest_rel")")"
+    local dest="${dest_dir}/$(basename "$dest_rel")"
+
+    mkdir -p "$dest_dir"
     cp -af "$src" "$dest"
     chmod "$mode" "$dest"
     chown "$owner" "$dest" 2>/dev/null || true

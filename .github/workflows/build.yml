@@ -186,6 +186,7 @@ jobs:
           sed -i "s/^UPSTREAM_DATE=.*/UPSTREAM_DATE=\"${DATE}\"/" config/images.conf
           sudo env \
             BUILD_VARIANT=gapps \
+            SKIP_VENDOR_REPACK=1 \
             SPOOF_PROFILE="${{ env.SPOOF_PROFILE }}" \
             ARM_TRANSLATION_BACKEND="${{ env.ARM_TRANSLATION_BACKEND }}" \
             bash scripts/pipeline.sh --variant gapps

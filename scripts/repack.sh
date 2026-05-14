@@ -63,7 +63,11 @@ main() {
     local target="${1:-${BUILD_VARIANT}}"
     log_step "Repack: $target"
 
-    _repack_vendor
+    if [[ "${SKIP_VENDOR_REPACK:-0}" != "1" ]]; then
+        _repack_vendor
+    else
+        log_info "Skipping vendor repack (SKIP_VENDOR_REPACK=1)."
+    fi
 
     case "$target" in
         vanilla) _repack_system vanilla ;;

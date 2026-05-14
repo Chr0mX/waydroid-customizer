@@ -4,6 +4,13 @@
   "description": "Minimal identity – keeps upstream Waydroid/LineageOS defaults",
   "props": {
     "ro.build.tags": "release-keys",
-    "ro.build.type": "user"
+    "ro.build.type": "user",
+    "ro.secure": "1",
+    "ro.debuggable": "0",
+    "ro.boot.verifiedbootstate": "green",
+    "ro.boot.flash.locked": "1",
+    "ro.boot.veritymode": "enforcing",
+    "ro.boot.warranty_bit": "0",
+    "ro.warranty_bit": "0"
   }
 }

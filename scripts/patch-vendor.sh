@@ -40,7 +40,12 @@ main() {
         "${REPO_ROOT}/modules/arm-translation/install.sh" "$mnt" "vendor"
     fi
 
-    # ── 3. Device spoof – vendor props ──────────────────────────────────────
+    # ── 3. Widevine L3 DRM blobs ────────────────────────────────────────────
+    if [[ "${ENABLE_WIDEVINE:-true}" == "true" ]]; then
+        "${REPO_ROOT}/modules/widevine/install.sh" "$mnt"
+    fi
+
+    # ── 4. Device spoof – vendor props ──────────────────────────────────────
     if [[ "${ENABLE_SPOOF}" == "true" ]]; then
         "${REPO_ROOT}/modules/spoof/install.sh" "$mnt" "vendor" "${SPOOF_PROFILE}"
     fi

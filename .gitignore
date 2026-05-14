@@ -1,0 +1,15 @@
+# Pipeline work directories – generated at build time
+work/
+
+# ARM translation binary assets (proprietary / downloaded)
+modules/arm-translation/assets/houdini/
+modules/arm-translation/assets/ndk_translation/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,6 @@
+# waydroid-vendor.rc – Waydroid x86_64 vendor-side init fragment
+# Placed in /vendor/etc/init/ via vendor overlay.
+
+on early-init
+    # Ensure vendor lib paths include ARM translation shim directories
+    setprop ro.vendor.extension_library ""

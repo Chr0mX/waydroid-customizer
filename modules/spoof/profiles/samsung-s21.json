@@ -1,0 +1,32 @@
+{
+  "name": "Samsung Galaxy S21",
+  "id": "samsung-s21",
+  "description": "Samsung Galaxy S21 (SM-G991B) – Android 12 identity",
+  "props": {
+    "ro.product.manufacturer": "samsung",
+    "ro.product.brand": "samsung",
+    "ro.product.name": "o1sxxx",
+    "ro.product.device": "o1s",
+    "ro.product.model": "SM-G991B",
+    "ro.product.system.brand": "samsung",
+    "ro.product.system.device": "o1s",
+    "ro.product.system.manufacturer": "samsung",
+    "ro.product.system.model": "SM-G991B",
+    "ro.product.system.name": "o1sxxx",
+    "ro.product.vendor.brand": "samsung",
+    "ro.product.vendor.device": "o1s",
+    "ro.product.vendor.manufacturer": "samsung",
+    "ro.product.vendor.model": "SM-G991B",
+    "ro.product.vendor.name": "o1sxxx",
+    "ro.build.fingerprint": "samsung/o1sxxx/o1s:12/SP1A.210812.016/G991BXXS5DVF4:user/release-keys",
+    "ro.system.build.fingerprint": "samsung/o1sxxx/o1s:12/SP1A.210812.016/G991BXXS5DVF4:user/release-keys",
+    "ro.vendor.build.fingerprint": "samsung/o1sxxx/o1s:12/SP1A.210812.016/G991BXXS5DVF4:user/release-keys",
+    "ro.build.version.release": "12",
+    "ro.build.version.sdk": "32",
+    "ro.build.id": "SP1A.210812.016",
+    "ro.build.display.id": "SP1A.210812.016.G991BXXS5DVF4",
+    "ro.build.tags": "release-keys",
+    "ro.build.type": "user",
+    "ro.build.version.security_patch": "2022-06-01"
+  }
+}

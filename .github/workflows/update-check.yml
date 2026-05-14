@@ -1,0 +1,70 @@
+name: Check for Upstream Updates
+
+on:
+  schedule:
+    - cron: "0 6 * * *"         # Daily at 06:00 UTC
+  workflow_dispatch:            # Manual trigger
+
+jobs:
+  check:
+    name: "Check upstream Waydroid image versions"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3 curl
+
+      - name: Check for new upstream version
+        id: check
+        run: |
+          source scripts/lib/common.sh
+          source scripts/lib/versions.sh
+          eval "$(check_upstream_update)"
+
+          echo "update_available=$UPDATE_AVAILABLE" >> "$GITHUB_OUTPUT"
+          echo "latest_date=$LATEST_DATE"           >> "$GITHUB_OUTPUT"
+
+          if [[ "$UPDATE_AVAILABLE" == "true" ]]; then
+            echo "::notice::New upstream date found: $LATEST_DATE (current: $(source config/images.conf && echo $UPSTREAM_DATE))"
+          else
+            echo "::notice::Already on latest: $LATEST_DATE"
+          fi
+
+      - name: Bump version in images.conf
+        if: steps.check.outputs.update_available == 'true'
+        run: |
+          source scripts/lib/common.sh
+          source scripts/lib/versions.sh
+          bump_version "${{ steps.check.outputs.latest_date }}"
+
+      - name: Create pull request for version bump
+        if: steps.check.outputs.update_available == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: bump upstream Waydroid images to ${{ steps.check.outputs.latest_date }}"
+          branch: "auto/upstream-${{ steps.check.outputs.latest_date }}"
+          title: "Update upstream Waydroid images to ${{ steps.check.outputs.latest_date }}"
+          body: |
+            Automated upstream version bump.
+
+            **Previous date:** `${{ steps.check.outputs.latest_date }}`
+            **New date:** `${{ steps.check.outputs.latest_date }}`
+
+            This PR was created automatically by the `update-check` workflow.
+            Merge to trigger a new build.
+
+            ### Checklist
+            - [ ] Verify new images boot correctly
+            - [ ] Confirm ARM translation still works
+            - [ ] Confirm spoof profiles still apply cleanly
+          labels: ["upstream-update", "automated"]
+          delete-branch: true

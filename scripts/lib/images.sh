@@ -92,15 +92,25 @@ inject_file() {
 }
 
 # inject_dir <src_dir> <image_root> <dest_dir_inside_image>
+#
+# Copies every file under src_dir into the image, using inject_file for each
+# one so that symlinks in the destination path (e.g. /etc → system/etc in
+# system-as-root images) are transparently followed via mkdir -p.
+# The old cp -af src/. dest/ approach fails when dest contains a symlink that
+# cp refuses to overwrite with a directory.
 inject_dir() {
     local src_dir="$1"
     local image_root="$2"
-    local dest_dir_rel="$3"
+    local dest_dir_rel="${3%/}"  # strip trailing slash; "/" becomes ""
 
-    local dest="${image_root}/${dest_dir_rel#/}"
-    mkdir -p "$dest"
-    cp -af "$src_dir/." "$dest/"
-    log_info "Injected directory: $dest_dir_rel"
+    local count=0
+    while IFS= read -r src_file; do
+        local rel="${src_file#${src_dir}/}"
+        local file_dest_rel="${dest_dir_rel:+${dest_dir_rel}/}${rel}"
+        inject_file "$src_file" "$image_root" "$file_dest_rel"
+        (( count++ )) || true
+    done < <(find "$src_dir" -type f | sort)
+    log_info "Injected directory: ${dest_dir_rel:-/} ($count files)"
 }
 
 # ─── Property file manipulation ──────────────────────────────────────────────

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # modules/arm-translation/fetch-ndk.sh
 #
-# Downloads libndk_translation from the WayDroid community NDK package.
-# This is a best-effort script; update NDK_PKG_URL if the upstream moves.
+# Downloads libndk_translation from the community ChromeOS-x86 vendor package.
+# This is best-effort; if all candidates fail the caller (install.sh) falls
+# back to "no ARM translation" gracefully.
 #
 # Usage: fetch-ndk.sh <output_dir>
 set -euo pipefail
@@ -12,40 +13,50 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${REPO_ROOT}/scripts/lib/common.sh"
 
 OUT_DIR="${1:?Usage: fetch-ndk.sh <output_dir>}"
-
-# NDK translation package – community-maintained build extracted from ChromeOS.
-# Pin the version here for reproducibility; update via update-check workflow.
-NDK_PKG_VERSION="${NDK_PKG_VERSION:-0.2.2}"
-NDK_PKG_URL="${NDK_PKG_URL:-https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/tags/v${NDK_PKG_VERSION}.tar.gz}"
-NDK_PKG_SHA256="${NDK_PKG_SHA256:-}"   # Set to enforce integrity
-
 CACHE_DIR="${DOWNLOAD_DIR:-/tmp}/ndk-translation-cache"
 
-main() {
-    ensure_dir "$OUT_DIR" "$CACHE_DIR"
+# Candidate archive URLs – tried in order; first 200 wins.
+# Prefer branch archives over release tags so the source doesn't 404 when tags
+# are deleted.  Override NDK_PKG_URL to pin a specific URL if desired.
+_NDK_CANDIDATES=(
+    # Main branch of the community ChromeOS vendor package
+    "https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/main.tar.gz"
+    # LineageOS 18.1 branch (same repo, alternate branch name)
+    "https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/lineage-18.1.tar.gz"
+)
+if [[ -n "${NDK_PKG_URL:-}" ]]; then
+    _NDK_CANDIDATES=("$NDK_PKG_URL" "${_NDK_CANDIDATES[@]}")
+fi
 
-    local archive="${CACHE_DIR}/ndk_translation-${NDK_PKG_VERSION}.tar.gz"
+# ─── Try each candidate URL ───────────────────────────────────────────────────
+_fetch_archive() {
+    local dest="$1"
+    local url candidate
+    for candidate in "${_NDK_CANDIDATES[@]}"; do
+        log_info "Trying: $candidate"
+        if curl -fsSL --max-time 120 --connect-timeout 20 \
+                -o "$dest" "$candidate" 2>/dev/null; then
+            log_ok "Downloaded from: $candidate"
+            return 0
+        fi
+        log_warn "Failed (trying next): $candidate"
+    done
+    log_error "All NDK translation download candidates failed."
+    return 1
+}
 
-    if [[ ! -f "$archive" ]]; then
-        log_info "Fetching libndk_translation v${NDK_PKG_VERSION}…"
-        download_file "$NDK_PKG_URL" "$archive" "$NDK_PKG_SHA256"
-    else
-        log_info "NDK translation archive already cached."
-    fi
+# ─── Extract libndk_translation from archive ────────────────────────────────
+_extract_libs() {
+    local archive="$1"
+    local extract_dir="$2"
 
-    local extract_dir="${CACHE_DIR}/ndk-${NDK_PKG_VERSION}"
-    if [[ ! -d "$extract_dir" ]]; then
-        mkdir -p "$extract_dir"
-        tar -xzf "$archive" -C "$extract_dir" --strip-components=1
-    fi
+    mkdir -p "$extract_dir"
+    tar -xzf "$archive" -C "$extract_dir" --strip-components=1 2>/dev/null || {
+        log_error "Failed to extract archive (may be corrupt)."
+        return 1
+    }
 
-    # Copy relevant files into OUT_DIR
-    local src_lib="${extract_dir}/houdini"
-    if [[ ! -d "$src_lib" ]]; then
-        # Try alternate layout
-        src_lib="${extract_dir}"
-    fi
-
+    local found=0
     for so in \
         "system/lib/libndk_translation.so" \
         "system/lib64/libndk_translation.so" \
@@ -56,18 +67,47 @@ main() {
             mkdir -p "${OUT_DIR}/$(dirname "$rel")"
             cp -af "$full_src" "${OUT_DIR}/${rel}"
             log_info "Extracted: $rel"
+            (( found++ )) || true
         fi
     done
+
+    if (( found == 0 )); then
+        log_error "No libndk_translation libraries found in archive."
+        log_error "Archive layout may have changed – check the source repository."
+        return 1
+    fi
+    return 0
+}
+
+main() {
+    ensure_dir "$OUT_DIR" "$CACHE_DIR"
+
+    local archive="${CACHE_DIR}/ndk_translation-main.tar.gz"
+
+    if [[ ! -f "$archive" ]]; then
+        _fetch_archive "$archive" || return 1
+    else
+        log_info "NDK translation archive already cached."
+    fi
+
+    local extract_dir="${CACHE_DIR}/ndk-main"
+    _extract_libs "$archive" "$extract_dir" || {
+        # Cached archive might be stale/corrupt – remove and retry once
+        rm -f "$archive"
+        rm -rf "$extract_dir"
+        log_info "Retrying download after cache invalidation…"
+        _fetch_archive "$archive" || return 1
+        _extract_libs "$archive" "$extract_dir" || return 1
+    }
 
     if [[ -f "${OUT_DIR}/lib64/libndk_translation.so" ]] || \
        [[ -f "${OUT_DIR}/lib/libndk_translation.so"   ]]; then
         log_ok "libndk_translation ready in $OUT_DIR"
         return 0
-    else
-        log_error "NDK translation libraries not found in extracted archive."
-        log_error "Check NDK_PKG_URL and update fetch-ndk.sh."
-        return 1
     fi
+
+    log_error "libndk_translation not found after extraction."
+    return 1
 }
 
 main

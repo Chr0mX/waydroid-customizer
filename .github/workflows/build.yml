@@ -107,11 +107,19 @@ jobs:
             bc
 
       - name: Restore download cache
+        id: cache-vanilla
         uses: actions/cache@v4
         with:
           path: work/downloads
           key: ${{ needs.download.outputs.cache_key }}
           restore-keys: waydroid-images-
+
+      - name: Download upstream images (cache miss fallback)
+        if: steps.cache-vanilla.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-images-${{ needs.download.outputs.upstream_date }}
+          path: work/downloads
 
       - name: Run pipeline (vanilla)
         run: |
@@ -157,11 +165,19 @@ jobs:
             bc
 
       - name: Restore download cache
+        id: cache-gapps
         uses: actions/cache@v4
         with:
           path: work/downloads
           key: ${{ needs.download.outputs.cache_key }}
           restore-keys: waydroid-images-
+
+      - name: Download upstream images (cache miss fallback)
+        if: steps.cache-gapps.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-images-${{ needs.download.outputs.upstream_date }}
+          path: work/downloads
 
       - name: Run pipeline (gapps)
         run: |

@@ -8,7 +8,10 @@ if [[ -z "${REPO_ROOT:-}" ]]; then
 fi
 export REPO_ROOT
 
-# Source configs if not already loaded
+# Source configs on every invocation.
+# Variables like DOWNLOAD_DIR are NOT exported to subprocesses, so we cannot
+# rely on a loaded-guard; each subprocess must source the configs itself.
+# All vars use ${VAR:-default} so re-sourcing is idempotent.
 _load_config() {
     local conf="$1"
     if [[ -f "${REPO_ROOT}/config/${conf}" ]]; then
@@ -17,11 +20,8 @@ _load_config() {
     fi
 }
 
-if [[ -z "${_PIPELINE_CONF_LOADED:-}" ]]; then
-    _load_config pipeline.conf
-    _load_config images.conf
-    export _PIPELINE_CONF_LOADED=1
-fi
+_load_config pipeline.conf
+_load_config images.conf
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 _log_ts() { date '+%H:%M:%S'; }

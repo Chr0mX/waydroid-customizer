@@ -19,6 +19,12 @@ on:
         default: "auto"
         type: choice
         options: [auto, houdini, ndk]
+      enable_widevine:
+        description: "Inject Widevine L3 DRM blobs into vendor image"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
       upstream_date:
         description: "Override upstream date tag (leave empty to use images.conf)"
         required: false
@@ -40,6 +46,7 @@ env:
   BUILD_VARIANT:            ${{ github.event.inputs.variant || 'both' }}
   SPOOF_PROFILE:            ${{ github.event.inputs.spoof_profile || 'pixel-6a' }}
   ARM_TRANSLATION_BACKEND:  ${{ github.event.inputs.arm_backend || 'auto' }}
+  ENABLE_WIDEVINE:          ${{ github.event.inputs.enable_widevine || 'true' }}
 
 jobs:
   # ─── Download & cache upstream images ──────────────────────────────────────
@@ -130,6 +137,7 @@ jobs:
             BUILD_VARIANT=vanilla \
             SPOOF_PROFILE="${{ env.SPOOF_PROFILE }}" \
             ARM_TRANSLATION_BACKEND="${{ env.ARM_TRANSLATION_BACKEND }}" \
+            ENABLE_WIDEVINE="${{ env.ENABLE_WIDEVINE }}" \
             bash scripts/pipeline.sh --variant vanilla
 
       - name: Upload vanilla artifacts
@@ -189,6 +197,7 @@ jobs:
             SKIP_VENDOR_REPACK=1 \
             SPOOF_PROFILE="${{ env.SPOOF_PROFILE }}" \
             ARM_TRANSLATION_BACKEND="${{ env.ARM_TRANSLATION_BACKEND }}" \
+            ENABLE_WIDEVINE="${{ env.ENABLE_WIDEVINE }}" \
             bash scripts/pipeline.sh --variant gapps
 
       - name: Upload GAPPS artifacts

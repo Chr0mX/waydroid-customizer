@@ -27,6 +27,13 @@
     "ro.build.display.id": "SP1A.210812.016.G991BXXS5DVF4",
     "ro.build.tags": "release-keys",
     "ro.build.type": "user",
-    "ro.build.version.security_patch": "2022-06-01"
+    "ro.build.version.security_patch": "2022-06-01",
+    "ro.secure": "1",
+    "ro.debuggable": "0",
+    "ro.boot.verifiedbootstate": "green",
+    "ro.boot.flash.locked": "1",
+    "ro.boot.veritymode": "enforcing",
+    "ro.boot.warranty_bit": "0",
+    "ro.warranty_bit": "0"
   }
 }

@@ -1,0 +1,9 @@
+# waydroid-base.rc – Waydroid x86_64 base system tweaks
+# Placed in /system/etc/init/ via system overlay.
+
+on property:sys.boot_completed=1
+    # Ensure /data/waydroid-spoof exists for the runtime spoof loader
+    mkdir /data/waydroid-spoof 0750 system system
+
+    # Expose binfmt_misc status for diagnostic purposes
+    write /proc/sys/fs/binfmt_misc/status 1

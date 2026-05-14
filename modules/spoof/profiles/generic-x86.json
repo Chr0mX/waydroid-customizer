@@ -1,0 +1,9 @@
+{
+  "name": "Generic x86 (passthrough)",
+  "id": "generic-x86",
+  "description": "Minimal identity – keeps upstream Waydroid/LineageOS defaults",
+  "props": {
+    "ro.build.tags": "release-keys",
+    "ro.build.type": "user"
+  }
+}

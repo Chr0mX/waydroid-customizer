@@ -1,0 +1,248 @@
+name: Build Waydroid Custom Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Image variant to build"
+        required: true
+        default: "both"
+        type: choice
+        options: [vanilla, gapps, both]
+      spoof_profile:
+        description: "Device spoof profile"
+        required: false
+        default: "pixel-6a"
+      arm_backend:
+        description: "ARM translation backend"
+        required: false
+        default: "auto"
+        type: choice
+        options: [auto, houdini, ndk]
+      upstream_date:
+        description: "Override upstream date tag (leave empty to use images.conf)"
+        required: false
+        default: ""
+
+  push:
+    branches: [main]
+    paths:
+      - "config/images.conf"      # triggers rebuild when version is bumped
+      - "modules/**"
+      - "overlays/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
+
+  schedule:
+    - cron: "0 3 * * 1"          # Weekly Monday 03:00 UTC rebuild
+
+env:
+  BUILD_VARIANT:            ${{ github.event.inputs.variant || 'both' }}
+  SPOOF_PROFILE:            ${{ github.event.inputs.spoof_profile || 'pixel-6a' }}
+  ARM_TRANSLATION_BACKEND:  ${{ github.event.inputs.arm_backend || 'auto' }}
+
+jobs:
+  # ─── Download & cache upstream images ──────────────────────────────────────
+  download:
+    name: "Download upstream images"
+    runs-on: ubuntu-24.04
+    outputs:
+      upstream_date: ${{ steps.version.outputs.upstream_date }}
+      cache_key:     ${{ steps.version.outputs.cache_key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve upstream date
+        id: version
+        run: |
+          source config/images.conf
+          DATE="${{ github.event.inputs.upstream_date }}"
+          if [[ -z "$DATE" ]]; then DATE="$UPSTREAM_DATE"; fi
+          echo "upstream_date=$DATE"   >> "$GITHUB_OUTPUT"
+          echo "cache_key=waydroid-images-${DATE}-${{ env.BUILD_VARIANT }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore image cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: work/downloads
+          key: ${{ steps.version.outputs.cache_key }}
+
+      - name: Download images (cache miss)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          source config/images.conf
+          DATE="${{ steps.version.outputs.upstream_date }}"
+          # Override date if provided
+          sed -i "s/^UPSTREAM_DATE=.*/UPSTREAM_DATE=\"${DATE}\"/" config/images.conf
+          sudo bash scripts/download.sh "${{ env.BUILD_VARIANT }}"
+
+      - name: Upload download artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-images-${{ steps.version.outputs.upstream_date }}
+          path: work/downloads/*.zip
+          retention-days: 3
+
+  # ─── Build vanilla ───────────────────────────────────────────────────────────
+  build-vanilla:
+    name: "Build: vanilla"
+    runs-on: ubuntu-24.04
+    needs: download
+    if: contains(fromJSON('["vanilla","both"]'), github.event.inputs.variant || 'both')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            android-sdk-libsparse-utils \
+            e2fsprogs \
+            util-linux \
+            unzip \
+            zip \
+            python3 \
+            curl \
+            bc
+
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: work/downloads
+          key: ${{ needs.download.outputs.cache_key }}
+          restore-keys: waydroid-images-
+
+      - name: Run pipeline (vanilla)
+        run: |
+          source config/images.conf
+          DATE="${{ needs.download.outputs.upstream_date }}"
+          sed -i "s/^UPSTREAM_DATE=.*/UPSTREAM_DATE=\"${DATE}\"/" config/images.conf
+          sudo env \
+            BUILD_VARIANT=vanilla \
+            SPOOF_PROFILE="${{ env.SPOOF_PROFILE }}" \
+            ARM_TRANSLATION_BACKEND="${{ env.ARM_TRANSLATION_BACKEND }}" \
+            bash scripts/pipeline.sh --variant vanilla
+
+      - name: Upload vanilla artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: waydroid-custom-vanilla-${{ needs.download.outputs.upstream_date }}
+          path: |
+            work/output/*.zip
+            work/output/*.sha256
+            work/output/manifest.json
+          retention-days: 30
+
+  # ─── Build GAPPS ─────────────────────────────────────────────────────────────
+  build-gapps:
+    name: "Build: gapps"
+    runs-on: ubuntu-24.04
+    needs: download
+    if: contains(fromJSON('["gapps","both"]'), github.event.inputs.variant || 'both')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            android-sdk-libsparse-utils \
+            e2fsprogs \
+            util-linux \
+            unzip \
+            zip \
+            python3 \
+            curl \
+            bc
+
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: work/downloads
+          key: ${{ needs.download.outputs.cache_key }}
+          restore-keys: waydroid-images-
+
+      - name: Run pipeline (gapps)
+        run: |
+          source config/images.conf
+          DATE="${{ needs.download.outputs.upstream_date }}"
+          sed -i "s/^UPSTREAM_DATE=.*/UPSTREAM_DATE=\"${DATE}\"/" config/images.conf
+          sudo env \
+            BUILD_VARIANT=gapps \
+            SPOOF_PROFILE="${{ env.SPOOF_PROFILE }}" \
+            ARM_TRANSLATION_BACKEND="${{ env.ARM_TRANSLATION_BACKEND }}" \
+            bash scripts/pipeline.sh --variant gapps
+
+      - name: Upload GAPPS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: waydroid-custom-gapps-${{ needs.download.outputs.upstream_date }}
+          path: |
+            work/output/*.zip
+            work/output/*.sha256
+            work/output/manifest.json
+          retention-days: 30
+
+  # ─── Publish release ──────────────────────────────────────────────────────────
+  release:
+    name: "Publish release"
+    runs-on: ubuntu-24.04
+    needs: [download, build-vanilla, build-gapps]
+    if: |
+      always() &&
+      (needs.build-vanilla.result == 'success' || needs.build-gapps.result == 'success') &&
+      (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: "waydroid-custom-*"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_DATE: ${{ needs.download.outputs.upstream_date }}
+        run: |
+          TAG="v${UPSTREAM_DATE}-custom"
+          TITLE="Waydroid Custom Images ${UPSTREAM_DATE}"
+
+          # Build notes
+          NOTES="## Waydroid Custom Images – ${UPSTREAM_DATE}
+
+          **Upstream base:** LineageOS 18.1 (${UPSTREAM_DATE})
+          **ARM translation:** ${ARM_TRANSLATION_BACKEND}
+          **Spoof profile:** ${SPOOF_PROFILE}
+          **Variants:** ${BUILD_VARIANT}
+
+          ### Artifacts
+          \`\`\`
+          $(find release-artifacts -name '*.zip' -exec basename {} \; | sort)
+          \`\`\`
+
+          ### Installation
+          1. Stop Waydroid: \`waydroid session stop\`
+          2. Replace \`/var/lib/waydroid/images/system.img\` and \`vendor.img\`
+          3. Start Waydroid: \`waydroid session start\`
+
+          ### Runtime profile switching
+          \`\`\`bash
+          bash tools/set-spoof-profile.sh pixel-6a
+          waydroid session stop && waydroid session start
+          \`\`\`
+          "
+
+          # Delete existing tag/release if present
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git push origin --delete "$TAG" 2>/dev/null || true
+
+          # Create new release
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            $(find release-artifacts -type f \( -name '*.zip' -o -name '*.sha256' -o -name 'manifest.json' \) | sort | xargs)

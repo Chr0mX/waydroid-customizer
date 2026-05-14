@@ -1,0 +1,32 @@
+{
+  "name": "Google Pixel 4a",
+  "id": "pixel-4a",
+  "description": "Google Pixel 4a (sunfish) – Android 12 identity",
+  "props": {
+    "ro.product.manufacturer": "Google",
+    "ro.product.brand": "google",
+    "ro.product.name": "sunfish",
+    "ro.product.device": "sunfish",
+    "ro.product.model": "Pixel 4a",
+    "ro.product.system.brand": "google",
+    "ro.product.system.device": "sunfish",
+    "ro.product.system.manufacturer": "Google",
+    "ro.product.system.model": "Pixel 4a",
+    "ro.product.system.name": "sunfish",
+    "ro.product.vendor.brand": "google",
+    "ro.product.vendor.device": "sunfish",
+    "ro.product.vendor.manufacturer": "Google",
+    "ro.product.vendor.model": "Pixel 4a",
+    "ro.product.vendor.name": "sunfish",
+    "ro.build.fingerprint": "google/sunfish/sunfish:12/SQ3A.220705.003/8672030:user/release-keys",
+    "ro.system.build.fingerprint": "google/sunfish/sunfish:12/SQ3A.220705.003/8672030:user/release-keys",
+    "ro.vendor.build.fingerprint": "google/sunfish/sunfish:12/SQ3A.220705.003/8672030:user/release-keys",
+    "ro.build.version.release": "12",
+    "ro.build.version.sdk": "32",
+    "ro.build.id": "SQ3A.220705.003",
+    "ro.build.display.id": "SQ3A.220705.003",
+    "ro.build.tags": "release-keys",
+    "ro.build.type": "user",
+    "ro.build.version.security_patch": "2022-07-05"
+  }
+}

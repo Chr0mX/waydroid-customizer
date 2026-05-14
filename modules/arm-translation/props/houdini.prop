@@ -1,0 +1,13 @@
+# Houdini-specific property additions
+# These are merged into system/build.prop at patch time.
+
+# Ensure the VM loads houdini as the interpreter for foreign ABIs
+ro.dalvik.vm.native.bridge=libhoudini.so
+ro.enable.native.bridge.exec=1
+
+# Map ARM ISAs to host ISAs for ART
+ro.dalvik.vm.isa.arm=x86
+ro.dalvik.vm.isa.arm64=x86_64
+
+# Enable ARM app compatibility checks
+ro.zygote=zygote64_32

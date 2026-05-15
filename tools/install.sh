@@ -9,6 +9,9 @@
 #   --profile   pixel-5|pixel-4a|samsung-s21|generic-x86|none
 #                                    Device spoof profile (default: pixel-5)
 #   --release   vDATE-custom         Specific release tag (default: latest)
+#   --local-images <dir>             Use pre-built ZIPs from this directory instead of
+#                                    downloading from GitHub Releases. The directory must
+#                                    contain the output of scripts/repack.sh (*.zip files).
 #   --images-only                    Skip Waydroid apt install; replace images only
 #   --overlay-modules <list>         Comma-separated runtime modules to install via
 #                                    /var/lib/waydroid/overlay/ (e.g. widevine,arm-ndk)
@@ -47,12 +50,13 @@ die()       { log_error "$*"; exit 1; }
 VARIANT=""
 PROFILE="pixel-5"
 RELEASE_TAG=""
+LOCAL_IMAGES_DIR=""
 IMAGES_ONLY=0
 OVERLAY_MODULES=""
 YES=0
 
 usage() {
-    grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -22
+    grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -26
     exit 0
 }
 
@@ -61,6 +65,7 @@ while [[ $# -gt 0 ]]; do
         --variant)         VARIANT="$2";          shift 2 ;;
         --profile)         PROFILE="$2";          shift 2 ;;
         --release)         RELEASE_TAG="$2";      shift 2 ;;
+        --local-images)    LOCAL_IMAGES_DIR="$2"; shift 2 ;;
         --images-only)     IMAGES_ONLY=1;         shift ;;
         --overlay-modules) OVERLAY_MODULES="$2";  shift 2 ;;
         --yes|-y)          YES=1;                 shift ;;
@@ -110,14 +115,30 @@ print(val)
 }
 
 # ─── Download with retry ──────────────────────────────────────────────────────
+_human_size() {
+    local bytes="$1"
+    if   (( bytes >= 1073741824 )); then printf "%.1f GB" "$(echo "scale=1; $bytes/1073741824" | bc)"
+    elif (( bytes >=    1048576 )); then printf "%.0f MB"  "$(echo "scale=0; $bytes/1048576"    | bc)"
+    else printf "%d KB" "$(( bytes / 1024 ))"
+    fi
+}
+
 _download_with_retry() {
     local url="$1" dest="$2"
+
+    local content_length
+    content_length="$(curl -fsI --connect-timeout 10 "$url" 2>/dev/null \
+        | grep -i '^content-length:' | tail -1 | tr -d '[:space:]' | cut -d: -f2)"
+    if [[ "$content_length" =~ ^[0-9]+$ && "$content_length" -gt 0 ]]; then
+        log_info "File size: $(_human_size "$content_length") — this may take several minutes."
+    fi
+
     local attempt=0 wait=5
     while (( attempt < 3 )); do
         (( attempt++ )) || true
         log_info "Downloading $(basename "$dest") (attempt $attempt/3)…"
-        if curl -fsSL --progress-bar --connect-timeout 30 --max-time 600 \
-                "$url" -o "$dest"; then
+        if curl -fL --progress-bar --connect-timeout 30 --max-time 600 \
+                "$url" -o "$dest" 2>&1; then
             [[ -s "$dest" ]] || { log_warn "Downloaded file is empty."; rm -f "$dest"; false; } && return 0
         fi
         log_warn "Download failed. Retrying in ${wait}s…"
@@ -168,6 +189,10 @@ preflight() {
             die "Invalid --variant '$VARIANT'. Use: vanilla or gapps"
     fi
 
+    if [[ -n "$LOCAL_IMAGES_DIR" ]]; then
+        [[ -d "$LOCAL_IMAGES_DIR" ]] || die "--local-images: directory not found: $LOCAL_IMAGES_DIR"
+    fi
+
     if [[ -n "$OVERLAY_MODULES" ]]; then
         local mod
         for mod in ${OVERLAY_MODULES//,/ }; do
@@ -216,9 +241,6 @@ install_waydroid() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y waydroid \
         || die "apt-get install waydroid failed."
     log_ok "Waydroid installed."
-
-    log_info "Running waydroid init…"
-    waydroid init || log_warn "waydroid init failed — will proceed; images will be replaced."
 }
 
 # ─── Release resolution ───────────────────────────────────────────────────────
@@ -280,6 +302,21 @@ download_images() {
         "$VENDOR_ZIP"
 }
 
+# ─── Local image location ────────────────────────────────────────────────────
+_locate_local_images() {
+    local dir="$1"
+    local variant_upper="${VARIANT^^}"
+
+    SYSTEM_ZIP="$(find "$dir" -maxdepth 1 -name "*-${variant_upper}-*-system.zip" | sort | tail -1)"
+    VENDOR_ZIP="$(find "$dir" -maxdepth 1 -name "*-MAINLINE-*-vendor.zip"         | sort | tail -1)"
+
+    [[ -f "$SYSTEM_ZIP" ]] || die "No ${variant_upper} system ZIP found in $LOCAL_IMAGES_DIR"
+    [[ -f "$VENDOR_ZIP" ]] || die "No MAINLINE vendor ZIP found in $LOCAL_IMAGES_DIR"
+
+    log_ok "Local system: $(basename "$SYSTEM_ZIP")"
+    log_ok "Local vendor: $(basename "$VENDOR_ZIP")"
+}
+
 # ─── Image replacement ────────────────────────────────────────────────────────
 _wait_for_stopped() {
     local deadline=$(( $(date +%s) + 15 ))
@@ -310,6 +347,13 @@ replace_images() {
     unzip -o "$VENDOR_ZIP" "vendor.img" -d "$IMAGES_DIR" >/dev/null
     [[ -s "${IMAGES_DIR}/vendor.img" ]] || die "vendor.img not found or empty after extraction."
     log_ok "vendor.img installed ($(du -h "${IMAGES_DIR}/vendor.img" | awk '{print $1}'))."
+}
+
+# ─── Waydroid container init ──────────────────────────────────────────────────
+_init_waydroid_container() {
+    log_info "Initialising Waydroid container with custom images…"
+    waydroid init -f -i "$IMAGES_DIR" \
+        || log_warn "waydroid init reported an error — container may still start."
 }
 
 # ─── Spoof profile ────────────────────────────────────────────────────────────
@@ -461,9 +505,14 @@ main() {
 
     resolve_variant
     install_waydroid
-    resolve_release
-    download_images
+    if [[ -n "$LOCAL_IMAGES_DIR" ]]; then
+        _locate_local_images "$LOCAL_IMAGES_DIR"
+    else
+        resolve_release
+        download_images
+    fi
     replace_images
+    _init_waydroid_container
     apply_spoof_profile
     install_overlay_modules
     start_waydroid
@@ -472,7 +521,11 @@ main() {
     log_ok "════════════════════════════════════════════"
     log_ok "  Waydroid custom images installed!"
     log_ok "  Variant:  $VARIANT"
-    log_ok "  Release:  $RELEASE_TAG"
+    if [[ -n "$LOCAL_IMAGES_DIR" ]]; then
+        log_ok "  Source:   local ($LOCAL_IMAGES_DIR)"
+    else
+        log_ok "  Release:  $RELEASE_TAG"
+    fi
     log_ok "  Profile:  $PROFILE"
     [[ -n "$OVERLAY_MODULES" ]] && log_ok "  Overlays: $OVERLAY_MODULES"
     log_ok "════════════════════════════════════════════"

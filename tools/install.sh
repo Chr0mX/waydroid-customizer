@@ -12,12 +12,14 @@
 #   --local-images <dir>             Use pre-built ZIPs from this directory instead of
 #                                    downloading from GitHub Releases. The directory must
 #                                    contain the output of scripts/repack.sh (*.zip files).
-#   --images-only                    Skip Waydroid apt install; replace images only
+#   --images-only                    Skip Waydroid package install; replace images only
 #   --overlay-modules <list>         Comma-separated runtime modules to install via
 #                                    /var/lib/waydroid/overlay/ (e.g. widevine,arm-ndk)
 #                                    Does NOT replace base images.
 #   --yes                            Non-interactive; use defaults without prompting
 #   --help                           Show this help
+#
+# Supported distributions: Ubuntu/Debian (apt), Fedora (dnf + Copr)
 set -euo pipefail
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -33,6 +35,7 @@ readonly WAYDROID_APT_LIST="/etc/apt/sources.list.d/waydroid.list"
 readonly WAYDROID_GPG="/usr/share/keyrings/waydroid.gpg"
 readonly TMP_DIR="/tmp/waydroid-install-$$"
 readonly VALID_PROFILES=(pixel-5 pixel-4a samsung-s21 generic-x86 none)
+DISTRO_FAMILY=""   # set by preflight(): "debian" | "fedora"
 # Approximate sizes for disk-space pre-check (bytes)
 readonly SYSTEM_ZIP_BYTES=$(( 450 * 1024 * 1024 ))
 readonly VENDOR_ZIP_BYTES=$(( 200 * 1024 * 1024 ))
@@ -173,9 +176,14 @@ preflight() {
         # shellcheck source=/dev/null
         source /etc/os-release
         local id_like="${ID_LIKE:-} ${ID:-}"
-        if [[ "$id_like" != *debian* && "$id_like" != *ubuntu* ]]; then
-            die "Unsupported distro (detected: ${ID:-unknown}). This installer supports Ubuntu/Debian only."
+        if [[ "$id_like" == *debian* || "$id_like" == *ubuntu* ]]; then
+            DISTRO_FAMILY="debian"
+        elif [[ "$id_like" == *fedora* || "$id_like" == *rhel* || "$id_like" == *centos* || "${ID:-}" == "fedora" ]]; then
+            DISTRO_FAMILY="fedora"
+        else
+            die "Unsupported distro (detected: ${ID:-unknown}). Supports Ubuntu/Debian and Fedora."
         fi
+        log_info "Detected distro family: $DISTRO_FAMILY (${PRETTY_NAME:-${ID:-unknown}})"
     else
         die "/etc/os-release not found. Cannot determine OS."
     fi
@@ -210,18 +218,7 @@ resolve_variant() {
 }
 
 # ─── Waydroid installation ────────────────────────────────────────────────────
-install_waydroid() {
-    if [[ "$IMAGES_ONLY" -eq 1 ]]; then
-        log_info "Skipping Waydroid apt installation (--images-only)."
-        return
-    fi
-
-    if command -v waydroid &>/dev/null; then
-        log_info "Waydroid already installed ($(waydroid --version 2>/dev/null || echo 'version unknown'))."
-        return
-    fi
-
-    log_info "Installing Waydroid from official repo…"
+_install_waydroid_apt() {
     require_cmd gpg lsb_release apt-get
 
     local codename
@@ -240,6 +237,39 @@ install_waydroid() {
     apt-get update -q || die "apt-get update failed. Check network and apt sources."
     DEBIAN_FRONTEND=noninteractive apt-get install -y waydroid \
         || die "apt-get install waydroid failed."
+}
+
+_install_waydroid_dnf() {
+    require_cmd dnf
+
+    # dnf copr requires the copr plugin (dnf-plugins-core)
+    if ! dnf copr --help &>/dev/null 2>&1; then
+        log_info "Installing dnf-plugins-core for Copr support…"
+        dnf install -y dnf-plugins-core || die "Failed to install dnf-plugins-core."
+    fi
+
+    log_info "Enabling aleasto/waydroid Copr repository…"
+    dnf copr enable -y aleasto/waydroid || die "dnf copr enable aleasto/waydroid failed."
+    dnf install -y waydroid || die "dnf install waydroid failed."
+}
+
+install_waydroid() {
+    if [[ "$IMAGES_ONLY" -eq 1 ]]; then
+        log_info "Skipping Waydroid package installation (--images-only)."
+        return
+    fi
+
+    if command -v waydroid &>/dev/null; then
+        log_info "Waydroid already installed ($(waydroid --version 2>/dev/null || echo 'version unknown'))."
+        return
+    fi
+
+    log_info "Installing Waydroid from official repo…"
+    if [[ "$DISTRO_FAMILY" == "fedora" ]]; then
+        _install_waydroid_dnf
+    else
+        _install_waydroid_apt
+    fi
     log_ok "Waydroid installed."
 }
 
@@ -330,9 +360,14 @@ _ensure_raw_ext4() {
     log_info "Detected Android sparse format in $(basename "$img") — converting to raw ext4…"
     if ! command -v simg2img &>/dev/null; then
         log_info "Installing simg2img…"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y android-tools-fsutils 2>/dev/null \
-            || DEBIAN_FRONTEND=noninteractive apt-get install -y simg2img 2>/dev/null \
-            || die "simg2img not found. Install it: apt-get install android-tools-fsutils"
+        if [[ "$DISTRO_FAMILY" == "fedora" ]]; then
+            dnf install -y android-tools 2>/dev/null \
+                || die "simg2img not found. Install it: dnf install android-tools"
+        else
+            DEBIAN_FRONTEND=noninteractive apt-get install -y android-tools-fsutils 2>/dev/null \
+                || DEBIAN_FRONTEND=noninteractive apt-get install -y simg2img 2>/dev/null \
+                || die "simg2img not found. Install it: apt-get install android-tools-fsutils"
+        fi
     fi
     local tmp="${img}.raw"
     simg2img "$img" "$tmp" || die "simg2img conversion failed for $(basename "$img")"

@@ -419,7 +419,11 @@ _init_waydroid_container() {
     # Without -f, waydroid sees existing images → skips CDN download → just creates LXC config.
     rm -rf /var/lib/waydroid/lxc/waydroid
     log_info "Creating Waydroid container config…"
-    waydroid init -i "$IMAGES_DIR" \
+    # waydroid 1.4+ requires -s/-v OTA URLs; -i alone no longer suffices.
+    # Use file:// so waydroid handles extraction without hitting the network.
+    waydroid init -f \
+        -s "file://${SYSTEM_ZIP}" \
+        -v "file://${VENDOR_ZIP}" \
         || log_warn "waydroid init reported an error — container may still start."
 }
 

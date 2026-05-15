@@ -375,8 +375,14 @@ replace_images() {
 }
 
 # ─── Waydroid container init ──────────────────────────────────────────────────
-_waydroid_is_initialized() {
-    [[ -d /var/lib/waydroid/lxc/waydroid ]]
+_init_waydroid_container() {
+    # Delete any stale LXC config so waydroid creates a fresh one.
+    # We pass -i "$IMAGES_DIR" (our images are already placed there by replace_images).
+    # Without -f, waydroid sees existing images → skips CDN download → just creates LXC config.
+    rm -rf /var/lib/waydroid/lxc/waydroid
+    log_info "Creating Waydroid container config…"
+    waydroid init -i "$IMAGES_DIR" \
+        || log_warn "waydroid init reported an error — container may still start."
 }
 
 # ─── Spoof profile ────────────────────────────────────────────────────────────
@@ -529,14 +535,6 @@ main() {
     resolve_variant
     install_waydroid
 
-    # For a completely fresh install (no LXC config yet), run waydroid init first
-    # so it creates the container config. It will download official images temporarily;
-    # replace_images() overwrites them with our custom images immediately after.
-    if [[ "$IMAGES_ONLY" -eq 0 ]] && ! _waydroid_is_initialized; then
-        log_info "First-time setup: running waydroid init to create container config…"
-        waydroid init || log_warn "waydroid init failed — proceeding with image replacement."
-    fi
-
     if [[ -n "$LOCAL_IMAGES_DIR" ]]; then
         _locate_local_images "$LOCAL_IMAGES_DIR"
     else
@@ -544,6 +542,7 @@ main() {
         download_images
     fi
     replace_images
+    _init_waydroid_container
     apply_spoof_profile
     install_overlay_modules
     start_waydroid

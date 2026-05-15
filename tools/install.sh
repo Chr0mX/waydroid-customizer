@@ -69,6 +69,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# When stdin is not a terminal (e.g. curl | sudo bash), interactive prompts
+# hang forever. Auto-enable --yes so piped execution works out of the box.
+if [[ ! -t 0 ]] && [[ "$YES" -eq 0 ]]; then
+    log_info "Non-interactive stdin detected — enabling --yes mode."
+    YES=1
+fi
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 require_cmd() {
     local cmd
@@ -476,7 +483,7 @@ main() {
     if [[ "$PROFILE" != "none" ]]; then
         echo "" >&2
         echo "  Switch device profile at any time:" >&2
-        echo "    sudo bash <(curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/main/tools/set-spoof-profile.sh) pixel-4a" >&2
+        echo "    curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/main/tools/set-spoof-profile.sh | sudo bash -s -- pixel-4a" >&2
     fi
     echo >&2
 }

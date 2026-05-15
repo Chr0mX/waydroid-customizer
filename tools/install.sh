@@ -28,6 +28,7 @@ readonly PROFILES_RAW_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/mai
 readonly NDK_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/archive/9324a8914b649b885dad6f2bfd14a67e5d1520bf.tar.gz"
 readonly WV_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_widevine-prebuilt/archive/48d1076a570837be6cdce8252d5d143363e37cc1.tar.gz"
 readonly IMAGES_DIR="/var/lib/waydroid/images"
+readonly OTA_DIR="/var/lib/waydroid/ota"
 readonly SPOOF_DIR="/var/lib/waydroid/data/waydroid-spoof"
 readonly OVERLAY_SYS="/var/lib/waydroid/overlay/system"
 readonly OVERLAY_VND="/var/lib/waydroid/overlay/vendor"
@@ -410,20 +411,25 @@ replace_images() {
     [[ -s "${IMAGES_DIR}/vendor.img" ]] || die "vendor.img not found or empty after extraction."
     _ensure_raw_ext4 "${IMAGES_DIR}/vendor.img"
     log_ok "vendor.img installed ($(du -h "${IMAGES_DIR}/vendor.img" | awk '{print $1}'))."
+
+    # Persist ZIPs so waydroid init (and manual reinit) can reference them via file://.
+    # TMP_DIR is wiped on exit, so copy to a stable OTA directory now.
+    log_info "Persisting OTA ZIPs for future reinit…"
+    mkdir -p "$OTA_DIR"
+    cp -f "$SYSTEM_ZIP" "${OTA_DIR}/system.zip"
+    cp -f "$VENDOR_ZIP"  "${OTA_DIR}/vendor.zip"
 }
 
 # ─── Waydroid container init ──────────────────────────────────────────────────
 _init_waydroid_container() {
-    # Delete any stale LXC config so waydroid creates a fresh one.
-    # We pass -i "$IMAGES_DIR" (our images are already placed there by replace_images).
-    # Without -f, waydroid sees existing images → skips CDN download → just creates LXC config.
     rm -rf /var/lib/waydroid/lxc/waydroid
     log_info "Creating Waydroid container config…"
-    # waydroid 1.4+ requires -s/-v OTA URLs; -i alone no longer suffices.
-    # Use file:// so waydroid handles extraction without hitting the network.
+    # waydroid 1.4+ requires explicit -s/-v OTA URLs; -i alone no longer works.
+    # Point to the persisted ZIPs in OTA_DIR so init succeeds without network access
+    # and the same paths remain valid for future manual reinit.
     waydroid init -f \
-        -s "file://${SYSTEM_ZIP}" \
-        -v "file://${VENDOR_ZIP}" \
+        -s "file://${OTA_DIR}/system.zip" \
+        -v "file://${OTA_DIR}/vendor.zip" \
         || log_warn "waydroid init reported an error — container may still start."
 }
 
@@ -585,6 +591,11 @@ main() {
     echo "  Next steps:" >&2
     echo "    waydroid show-full-ui       # launch the UI" >&2
     echo "    waydroid session stop       # stop the session" >&2
+    echo "" >&2
+    echo "  To reinitialize waydroid (e.g. after a kernel update):" >&2
+    echo "    sudo waydroid init -f \\" >&2
+    echo "      -s file://${OTA_DIR}/system.zip \\" >&2
+    echo "      -v file://${OTA_DIR}/vendor.zip" >&2
     if [[ "$PROFILE" != "none" ]]; then
         echo "" >&2
         echo "  Switch device profile at any time:" >&2

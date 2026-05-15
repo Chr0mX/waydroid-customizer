@@ -23,8 +23,8 @@ set -euo pipefail
 # ─── Constants ────────────────────────────────────────────────────────────────
 readonly RELEASE_REPO="chr0mx/waydroid-customizer"
 readonly PROFILES_RAW_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/main/modules/spoof/profiles"
-readonly NDK_ARCHIVE_URL="https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/main.tar.gz"
-readonly WV_ARCHIVE_URL="https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/main.tar.gz"
+readonly NDK_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/archive/9324a8914b649b885dad6f2bfd14a67e5d1520bf.tar.gz"
+readonly WV_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_widevine-prebuilt/archive/48d1076a570837be6cdce8252d5d143363e37cc1.tar.gz"
 readonly IMAGES_DIR="/var/lib/waydroid/images"
 readonly SPOOF_DIR="/var/lib/waydroid/data/waydroid-spoof"
 readonly OVERLAY_SYS="/var/lib/waydroid/overlay/system"
@@ -432,60 +432,40 @@ _overlay_widevine() {
     local overlay_vnd="$1"
     log_info "Installing Widevine L3 via overlay…"
 
-    local cache_file="${TMP_DIR}/chromeos-vendor-main.tar.gz"
-    local extract_dir="${TMP_DIR}/chromeos-vendor-main"
+    local cache_file="${TMP_DIR}/widevine-prebuilt.tar.gz"
+    local extract_dir="${TMP_DIR}/widevine-prebuilt"
 
     _check_disk_space "$TMP_DIR" "$OVERLAY_ARCHIVE_BYTES"
-    _overlay_extract_archive "$WV_ARCHIVE_URL" "$cache_file" "$extract_dir"
+    _overlay_extract_archive "$WV_PREBUILT_URL" "$cache_file" "$extract_dir"
 
-    local found=0
-    for src_rel in \
-        "vendor/lib64/libwvhidl.so" \
-        "vendor/lib64/mediadrm/libwvdrmengine.so" \
-        "vendor/etc/vintf/manifest/manifest_android.hardware.drm@1.3-service.widevine.xml"; do
-        local src="${extract_dir}/${src_rel}"
-        if [[ -f "$src" ]]; then
-            local dest_rel="${src_rel#vendor/}"
-            local dest="${overlay_vnd}/${dest_rel}"
-            mkdir -p "$(dirname "$dest")"
-            cp -af "$src" "$dest"
-            log_info "Overlay: $dest_rel"
-            (( found++ )) || true
-        fi
-    done
-
-    (( found > 0 )) || { log_warn "No Widevine blobs found in archive."; return 1; }
-    log_ok "Widevine L3 overlay installed ($found files)."
+    local prebuilts="${extract_dir}/prebuilts"
+    if [[ ! -d "$prebuilts" ]]; then
+        log_warn "prebuilts dir not found in Widevine archive."
+        return 1
+    fi
+    mkdir -p "$overlay_vnd"
+    cp -af "${prebuilts}/." "$overlay_vnd/"
+    log_ok "Widevine L3 overlay installed."
 }
 
 _overlay_arm_ndk() {
     local overlay_sys="$1"
     log_info "Installing libndk_translation via overlay…"
 
-    local cache_file="${TMP_DIR}/chromeos-vendor-main.tar.gz"
-    local extract_dir="${TMP_DIR}/chromeos-vendor-main"
+    local cache_file="${TMP_DIR}/ndk-prebuilt.tar.gz"
+    local extract_dir="${TMP_DIR}/ndk-prebuilt"
 
     _check_disk_space "$TMP_DIR" "$OVERLAY_ARCHIVE_BYTES"
-    _overlay_extract_archive "$NDK_ARCHIVE_URL" "$cache_file" "$extract_dir"
+    _overlay_extract_archive "$NDK_PREBUILT_URL" "$cache_file" "$extract_dir"
 
-    local found=0
-    for src_rel in \
-        "system/lib/libndk_translation.so" \
-        "system/lib64/libndk_translation.so" \
-        "system/etc/ndk_translation_config.xml"; do
-        local src="${extract_dir}/${src_rel}"
-        if [[ -f "$src" ]]; then
-            local dest_rel="${src_rel#system/}"
-            local dest="${overlay_sys}/${dest_rel}"
-            mkdir -p "$(dirname "$dest")"
-            cp -af "$src" "$dest"
-            log_info "Overlay: $dest_rel"
-            (( found++ )) || true
-        fi
-    done
-
-    (( found > 0 )) || { log_warn "No libndk_translation files found in archive."; return 1; }
-    log_ok "libndk_translation overlay installed ($found files)."
+    local prebuilts="${extract_dir}/prebuilts"
+    if [[ ! -d "$prebuilts" ]]; then
+        log_warn "prebuilts dir not found in NDK archive."
+        return 1
+    fi
+    mkdir -p "$overlay_sys"
+    cp -af "${prebuilts}/." "$overlay_sys/"
+    log_ok "libndk_translation overlay installed."
 }
 
 install_overlay_modules() {

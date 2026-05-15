@@ -19,10 +19,8 @@ CACHE_DIR="${DOWNLOAD_DIR:-/tmp}/ndk-translation-cache"
 # Prefer branch archives over release tags so the source doesn't 404 when tags
 # are deleted.  Override NDK_PKG_URL to pin a specific URL if desired.
 _NDK_CANDIDATES=(
-    # Main branch of the community ChromeOS vendor package
-    "https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/main.tar.gz"
-    # LineageOS 18.1 branch (same repo, alternate branch name)
-    "https://github.com/supremegamers/android_vendor_google_chromeos-x86/archive/refs/heads/lineage-18.1.tar.gz"
+    # Commit-pinned prebuilt repo (Android 11 / libndk_translation)
+    "https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/archive/9324a8914b649b885dad6f2bfd14a67e5d1520bf.tar.gz"
 )
 if [[ -n "${NDK_PKG_URL:-}" ]]; then
     _NDK_CANDIDATES=("$NDK_PKG_URL" "${_NDK_CANDIDATES[@]}")
@@ -58,12 +56,12 @@ _extract_libs() {
 
     local found=0
     for so in \
-        "system/lib/libndk_translation.so" \
-        "system/lib64/libndk_translation.so" \
-        "system/etc/ndk_translation_config.xml"; do
+        "prebuilts/lib/libndk_translation.so" \
+        "prebuilts/lib64/libndk_translation.so" \
+        "prebuilts/etc/ndk_translation_config.xml"; do
         local full_src="${extract_dir}/${so}"
         if [[ -f "$full_src" ]]; then
-            local rel="${so#system/}"
+            local rel="${so#prebuilts/}"
             mkdir -p "${OUT_DIR}/$(dirname "$rel")"
             cp -af "$full_src" "${OUT_DIR}/${rel}"
             log_info "Extracted: $rel"

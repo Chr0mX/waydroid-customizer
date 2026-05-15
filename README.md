@@ -40,24 +40,27 @@ Install Waydroid and apply the latest custom images in one command
 (Ubuntu/Debian only):
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/install.sh)
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/install.sh | sudo bash
 ```
 
-With options:
+With options — pass flags after `bash -s --`:
 
 ```bash
-# GAPPS variant, Samsung S21 identity, no prompts
-sudo bash <(curl -fsSL .../tools/install.sh) --variant gapps --profile samsung-s21 --yes
+# GAPPS variant, Samsung S21 identity
+curl -fsSL .../tools/install.sh | sudo bash -s -- --variant gapps --profile samsung-s21
 
 # Already have Waydroid — just swap images
-sudo bash <(curl -fsSL .../tools/install.sh) --images-only --variant vanilla
+curl -fsSL .../tools/install.sh | sudo bash -s -- --images-only --variant vanilla
 
 # Add Widevine L3 to an already-installed system (no image rebuild)
-sudo bash <(curl -fsSL .../tools/install.sh) --overlay-modules widevine
+curl -fsSL .../tools/install.sh | sudo bash -s -- --overlay-modules widevine
 
-# Full install + Widevine overlay in one command
-sudo bash <(curl -fsSL .../tools/install.sh) --variant vanilla --overlay-modules widevine --yes
+# Full install + Widevine overlay
+curl -fsSL .../tools/install.sh | sudo bash -s -- --variant vanilla --overlay-modules widevine
 ```
+
+> **Note:** piped execution automatically enables `--yes` (non-interactive) mode.
+> For interactive prompts, download first: `curl -fsSL URL -o install.sh && sudo bash install.sh`
 
 ### Installer options
 
@@ -434,14 +437,14 @@ already-deployed system:
 
 ```bash
 # Add Widevine L3 DRM (enables HD streaming on Netflix, Prime, etc.)
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/install.sh) \
-  --overlay-modules widevine
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/install.sh \
+  | sudo bash -s -- --overlay-modules widevine
 
 # Add updated libndk_translation (ARM translation update without rebuild)
-sudo bash <(curl -fsSL .../tools/install.sh) --overlay-modules arm-ndk
+curl -fsSL .../tools/install.sh | sudo bash -s -- --overlay-modules arm-ndk
 
 # Both at once
-sudo bash <(curl -fsSL .../tools/install.sh) --overlay-modules widevine,arm-ndk
+curl -fsSL .../tools/install.sh | sudo bash -s -- --overlay-modules widevine,arm-ndk
 ```
 
 Overlay files are written to:

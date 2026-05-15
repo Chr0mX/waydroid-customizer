@@ -115,14 +115,30 @@ print(val)
 }
 
 # ─── Download with retry ──────────────────────────────────────────────────────
+_human_size() {
+    local bytes="$1"
+    if   (( bytes >= 1073741824 )); then printf "%.1f GB" "$(echo "scale=1; $bytes/1073741824" | bc)"
+    elif (( bytes >=    1048576 )); then printf "%.0f MB"  "$(echo "scale=0; $bytes/1048576"    | bc)"
+    else printf "%d KB" "$(( bytes / 1024 ))"
+    fi
+}
+
 _download_with_retry() {
     local url="$1" dest="$2"
+
+    local content_length
+    content_length="$(curl -fsI --connect-timeout 10 "$url" 2>/dev/null \
+        | grep -i '^content-length:' | tail -1 | tr -d '[:space:]' | cut -d: -f2)"
+    if [[ "$content_length" =~ ^[0-9]+$ && "$content_length" -gt 0 ]]; then
+        log_info "File size: $(_human_size "$content_length") — this may take several minutes."
+    fi
+
     local attempt=0 wait=5
     while (( attempt < 3 )); do
         (( attempt++ )) || true
         log_info "Downloading $(basename "$dest") (attempt $attempt/3)…"
-        if curl -fsSL --progress-bar --connect-timeout 30 --max-time 600 \
-                "$url" -o "$dest"; then
+        if curl -fL --progress-bar --connect-timeout 30 --max-time 600 \
+                "$url" -o "$dest" 2>&1; then
             [[ -s "$dest" ]] || { log_warn "Downloaded file is empty."; rm -f "$dest"; false; } && return 0
         fi
         log_warn "Download failed. Retrying in ${wait}s…"

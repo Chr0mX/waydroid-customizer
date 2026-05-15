@@ -173,17 +173,20 @@ preflight() {
     require_cmd curl python3 unzip sha256sum
 
     if [[ -f /etc/os-release ]]; then
-        # shellcheck source=/dev/null
-        source /etc/os-release
-        local id_like="${ID_LIKE:-} ${ID:-}"
+        # Source in a subshell to avoid clobbering script globals (e.g. VARIANT, ID).
+        local os_id os_id_like os_pretty
+        os_id="$(      . /etc/os-release 2>/dev/null; printf '%s' "${ID:-}"          )"
+        os_id_like="$( . /etc/os-release 2>/dev/null; printf '%s' "${ID_LIKE:-}"     )"
+        os_pretty="$(  . /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}" )"
+        local id_like="${os_id_like} ${os_id}"
         if [[ "$id_like" == *debian* || "$id_like" == *ubuntu* ]]; then
             DISTRO_FAMILY="debian"
-        elif [[ "$id_like" == *fedora* || "$id_like" == *rhel* || "$id_like" == *centos* || "${ID:-}" == "fedora" ]]; then
+        elif [[ "$id_like" == *fedora* || "$id_like" == *rhel* || "$id_like" == *centos* || "$os_id" == "fedora" ]]; then
             DISTRO_FAMILY="fedora"
         else
-            die "Unsupported distro (detected: ${ID:-unknown}). Supports Ubuntu/Debian and Fedora."
+            die "Unsupported distro (detected: ${os_id:-unknown}). Supports Ubuntu/Debian and Fedora."
         fi
-        log_info "Detected distro family: $DISTRO_FAMILY (${PRETTY_NAME:-${ID:-unknown}})"
+        log_info "Detected distro family: $DISTRO_FAMILY (${os_pretty:-${os_id:-unknown}})"
     else
         die "/etc/os-release not found. Cannot determine OS."
     fi

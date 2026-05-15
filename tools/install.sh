@@ -6,8 +6,8 @@
 #
 # Options:
 #   --variant   vanilla|gapps        Image variant (default: prompt)
-#   --profile   pixel-6a|pixel-4a|samsung-s21|generic-x86|none
-#                                    Device spoof profile (default: pixel-6a)
+#   --profile   pixel-5|pixel-4a|samsung-s21|generic-x86|none
+#                                    Device spoof profile (default: pixel-5)
 #   --release   vDATE-custom         Specific release tag (default: latest)
 #   --images-only                    Skip Waydroid apt install; replace images only
 #   --overlay-modules <list>         Comma-separated runtime modules to install via
@@ -29,7 +29,7 @@ readonly OVERLAY_VND="/var/lib/waydroid/overlay/vendor"
 readonly WAYDROID_APT_LIST="/etc/apt/sources.list.d/waydroid.list"
 readonly WAYDROID_GPG="/usr/share/keyrings/waydroid.gpg"
 readonly TMP_DIR="/tmp/waydroid-install-$$"
-readonly VALID_PROFILES=(pixel-6a pixel-4a samsung-s21 generic-x86 none)
+readonly VALID_PROFILES=(pixel-5 pixel-4a samsung-s21 generic-x86 none)
 # Approximate sizes for disk-space pre-check (bytes)
 readonly SYSTEM_ZIP_BYTES=$(( 450 * 1024 * 1024 ))
 readonly VENDOR_ZIP_BYTES=$(( 200 * 1024 * 1024 ))
@@ -45,7 +45,7 @@ die()       { log_error "$*"; exit 1; }
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 VARIANT=""
-PROFILE="pixel-6a"
+PROFILE="pixel-5"
 RELEASE_TAG=""
 IMAGES_ONLY=0
 OVERLAY_MODULES=""

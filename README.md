@@ -64,7 +64,7 @@ sudo bash <(curl -fsSL .../tools/install.sh) --variant vanilla --overlay-modules
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--variant vanilla\|gapps` | prompt | Image variant |
-| `--profile <name>` | `pixel-6a` | Device spoof profile baked in at first boot |
+| `--profile <name>` | `pixel-5` | Device spoof profile baked in at first boot |
 | `--release vDATE-custom` | latest | Pin a specific release tag |
 | `--images-only` | — | Skip Waydroid apt install; replace images only |
 | `--overlay-modules <list>` | — | Runtime modules via overlay (see [below](#overlay-module-installation)) |
@@ -74,11 +74,13 @@ sudo bash <(curl -fsSL .../tools/install.sh) --variant vanilla --overlay-modules
 
 | Profile | Device | Android |
 |---------|--------|---------|
-| `pixel-6a` | Google Pixel 6a | 13 |
-| `pixel-4a` | Google Pixel 4a | 12 |
-| `samsung-s21` | Samsung Galaxy S21 | 12 |
+| `pixel-5` | Google Pixel 5 | 11 |
+| `pixel-4a` | Google Pixel 4a | 11 |
+| `samsung-s21` | Samsung Galaxy S21 | 11 |
 | `generic-x86` | Minimal / passthrough | — |
 | `none` | Skip profile injection | — |
+
+All profiles target **Android 11 (SDK 30)** to match the LineageOS 18.1 base.
 
 ---
 
@@ -88,8 +90,8 @@ sudo bash <(curl -fsSL .../tools/install.sh) --variant vanilla --overlay-modules
 git clone https://github.com/chr0mx/waydroid-customizer
 cd waydroid-customizer
 
-# Build both vanilla and GAPPS variants with Pixel 6a identity
-sudo BUILD_VARIANT=both SPOOF_PROFILE=pixel-6a bash scripts/pipeline.sh
+# Build both vanilla and GAPPS variants with Pixel 5 identity
+sudo BUILD_VARIANT=both SPOOF_PROFILE=pixel-5 bash scripts/pipeline.sh
 
 ls work/output/*.zip
 ```
@@ -146,7 +148,7 @@ waydroid-customizer/
 │   └── spoof/
 │       ├── install.sh       # Merges profile props + injects runtime loader
 │       ├── profiles/        # JSON device identity profiles
-│       │   ├── pixel-6a.json
+│       │   ├── pixel-5.json
 │       │   ├── pixel-4a.json
 │       │   ├── samsung-s21.json
 │       │   └── generic-x86.json
@@ -263,13 +265,14 @@ required by banking apps, Google Pay, and apps using SafetyNet.
 **Profile format:**
 ```json
 {
-  "name": "Google Pixel 6a",
-  "id": "pixel-6a",
+  "name": "Google Pixel 5",
+  "id": "pixel-5",
   "description": "…",
   "props": {
-    "ro.product.model": "Pixel 6a",
-    "ro.build.fingerprint": "google/bluejay/bluejay:13/…",
-    "ro.build.version.sdk": "33",
+    "ro.product.model": "Pixel 5",
+    "ro.build.fingerprint": "google/redfin/redfin:11/RQ3A.210805.001/7474174:user/release-keys",
+    "ro.build.version.release": "11",
+    "ro.build.version.sdk": "30",
     "ro.boot.verifiedbootstate": "green"
   }
 }
@@ -315,7 +318,7 @@ required by banking apps, Google Pay, and apps using SafetyNet.
 | `ENABLE_WIDEVINE` | `true` | Enable Widevine L3 DRM injection |
 | `ENABLE_SPOOF` | `true` | Enable device spoof module |
 | `ARM_TRANSLATION_BACKEND` | `auto` | `houdini` \| `ndk` \| `auto` |
-| `SPOOF_PROFILE` | `pixel-6a` | Profile name from `modules/spoof/profiles/` |
+| `SPOOF_PROFILE` | `pixel-5` | Profile name from `modules/spoof/profiles/` |
 | `SYSTEM_EXTRA_BYTES` | `128 MiB` | Extra headroom when resizing system image |
 | `VENDOR_EXTRA_BYTES` | `32 MiB` | Extra headroom when resizing vendor image |
 
@@ -352,7 +355,7 @@ docker build -t waydroid-customizer-build tools/
 docker run --rm --privileged \
   -v "$(pwd)":/workspace \
   -e BUILD_VARIANT=both \
-  -e SPOOF_PROFILE=pixel-6a \
+  -e SPOOF_PROFILE=pixel-5 \
   waydroid-customizer-build
 
 # Or use the wrapper
@@ -384,7 +387,7 @@ per-variant `manifest-<variant>.json` files.
 | Input | Default | Options |
 |-------|---------|---------|
 | `variant` | `both` | `vanilla`, `gapps`, `both` |
-| `spoof_profile` | `pixel-6a` | any profile id |
+| `spoof_profile` | `pixel-5` | any profile id |
 | `arm_backend` | `auto` | `auto`, `houdini`, `ndk` |
 | `enable_widevine` | `true` | `true`, `false` |
 | `upstream_date` | *(from images.conf)* | date override |
@@ -482,8 +485,9 @@ git commit -m "chore: bump upstream to 20251231"
      "description": "Custom identity",
      "props": {
        "ro.product.model": "My Device",
-       "ro.build.fingerprint": "brand/device/device:13/…:user/release-keys",
-       "ro.build.version.sdk": "33",
+       "ro.build.fingerprint": "brand/device/device:11/…:user/release-keys",
+       "ro.build.version.release": "11",
+       "ro.build.version.sdk": "30",
        "ro.build.tags": "release-keys",
        "ro.build.type": "user",
        "ro.secure": "1",

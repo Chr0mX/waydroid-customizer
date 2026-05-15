@@ -12,7 +12,7 @@ on:
       spoof_profile:
         description: "Device spoof profile"
         required: false
-        default: "pixel-6a"
+        default: "pixel-5"
       arm_backend:
         description: "ARM translation backend"
         required: false
@@ -44,7 +44,7 @@ on:
 
 env:
   BUILD_VARIANT:            ${{ github.event.inputs.variant || 'both' }}
-  SPOOF_PROFILE:            ${{ github.event.inputs.spoof_profile || 'pixel-6a' }}
+  SPOOF_PROFILE:            ${{ github.event.inputs.spoof_profile || 'pixel-5' }}
   ARM_TRANSLATION_BACKEND:  ${{ github.event.inputs.arm_backend || 'auto' }}
   ENABLE_WIDEVINE:          ${{ github.event.inputs.enable_widevine || 'true' }}
 
@@ -258,7 +258,7 @@ jobs:
 
           ### Runtime profile switching
           \`\`\`bash
-          bash tools/set-spoof-profile.sh pixel-6a
+          bash tools/set-spoof-profile.sh pixel-5
           waydroid session stop && waydroid session start
           \`\`\`
           "

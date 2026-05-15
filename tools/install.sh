@@ -317,6 +317,29 @@ _locate_local_images() {
     log_ok "Local vendor: $(basename "$VENDOR_ZIP")"
 }
 
+# ─── Sparse image detection and conversion ───────────────────────────────────
+_is_sparse_image() {
+    local magic
+    magic="$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')"
+    [[ "$magic" == "ed26ff3a" ]]
+}
+
+_ensure_raw_ext4() {
+    local img="$1"
+    _is_sparse_image "$img" || return 0
+    log_info "Detected Android sparse format in $(basename "$img") — converting to raw ext4…"
+    if ! command -v simg2img &>/dev/null; then
+        log_info "Installing simg2img…"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y android-tools-fsutils 2>/dev/null \
+            || DEBIAN_FRONTEND=noninteractive apt-get install -y simg2img 2>/dev/null \
+            || die "simg2img not found. Install it: apt-get install android-tools-fsutils"
+    fi
+    local tmp="${img}.raw"
+    simg2img "$img" "$tmp" || die "simg2img conversion failed for $(basename "$img")"
+    mv "$tmp" "$img"
+    log_ok "Converted to raw ext4: $(basename "$img")"
+}
+
 # ─── Image replacement ────────────────────────────────────────────────────────
 _wait_for_stopped() {
     local deadline=$(( $(date +%s) + 15 ))
@@ -341,11 +364,13 @@ replace_images() {
     log_info "Extracting system.img…"
     unzip -o "$SYSTEM_ZIP" "system.img" -d "$IMAGES_DIR" >/dev/null
     [[ -s "${IMAGES_DIR}/system.img" ]] || die "system.img not found or empty after extraction."
+    _ensure_raw_ext4 "${IMAGES_DIR}/system.img"
     log_ok "system.img installed ($(du -h "${IMAGES_DIR}/system.img" | awk '{print $1}'))."
 
     log_info "Extracting vendor.img…"
     unzip -o "$VENDOR_ZIP" "vendor.img" -d "$IMAGES_DIR" >/dev/null
     [[ -s "${IMAGES_DIR}/vendor.img" ]] || die "vendor.img not found or empty after extraction."
+    _ensure_raw_ext4 "${IMAGES_DIR}/vendor.img"
     log_ok "vendor.img installed ($(du -h "${IMAGES_DIR}/vendor.img" | awk '{print $1}'))."
 }
 

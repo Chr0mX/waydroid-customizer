@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/repack.sh – Convert patched raw images back to sparse and zip them
+# scripts/repack.sh – Zip patched raw images for distribution
 #
 # Usage: repack.sh [vanilla|gapps|both]
 set -euo pipefail
@@ -8,23 +8,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/images.sh"
 
-require_cmd img2simg zip sha256sum
+require_cmd zip sha256sum
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
-_sparse_and_zip() {
+_raw_zip() {
     local raw_img="$1"
     local out_img_name="$2"  # e.g. system.img
-    local zip_name="$3"      # e.g. lineage-18.1-...-VANILLA-...-system.zip
+    local zip_name="$3"      # e.g. waydroid-custom-...-VANILLA-...-system.zip
     local out_dir="$4"
 
-    local sparse_img="${out_dir}/${out_img_name}"
+    local staging="${out_dir}/${out_img_name}"
     local zip_out="${out_dir}/${zip_name}"
 
-    raw_to_sparse "$raw_img" "$sparse_img"
+    log_info "Staging raw image: $out_img_name"
+    cp "$raw_img" "$staging"
 
     log_info "Zipping: $zip_name"
-    (cd "$out_dir" && zip -0 "$zip_name" "$out_img_name")
-    rm -f "$sparse_img"
+    (cd "$out_dir" && zip "$zip_name" "$out_img_name")
+    rm -f "$staging"
 
     local cksum
     cksum="$(sha256sum "$zip_out" | awk '{print $1}')"
@@ -38,7 +39,7 @@ _repack_vendor() {
 
     local tag="${ARTIFACT_PREFIX}-${UPSTREAM_DATE}"
     local zip_name="${tag}-MAINLINE-${ARCH}-vendor.zip"
-    _sparse_and_zip "$raw_img" "vendor.img" "$zip_name" "$OUTPUT_DIR"
+    _raw_zip "$raw_img" "vendor.img" "$zip_name" "$OUTPUT_DIR"
 }
 
 _repack_system() {
@@ -54,7 +55,7 @@ _repack_system() {
         *)       flavor="${variant^^}" ;;
     esac
     local zip_name="${tag}-${flavor}-${ARCH}-system.zip"
-    _sparse_and_zip "$raw_img" "system.img" "$zip_name" "$OUTPUT_DIR"
+    _raw_zip "$raw_img" "system.img" "$zip_name" "$OUTPUT_DIR"
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ readonly PROFILES_RAW_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/mai
 readonly NDK_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/archive/9324a8914b649b885dad6f2bfd14a67e5d1520bf.tar.gz"
 readonly WV_PREBUILT_URL="https://github.com/supremegamers/vendor_google_proprietary_widevine-prebuilt/archive/48d1076a570837be6cdce8252d5d143363e37cc1.tar.gz"
 readonly IMAGES_DIR="/var/lib/waydroid/images"
-readonly OTA_DIR="/var/lib/waydroid/ota"
+readonly PREINSTALLED_IMAGES_DIR="/usr/share/waydroid-extra/images"
 readonly SPOOF_DIR="/var/lib/waydroid/data/waydroid-spoof"
 readonly OVERLAY_SYS="/var/lib/waydroid/overlay/system"
 readonly OVERLAY_VND="/var/lib/waydroid/overlay/vendor"
@@ -397,39 +397,32 @@ replace_images() {
     systemctl stop waydroid-container 2>/dev/null || true
     _wait_for_stopped
 
-    _check_disk_space "$IMAGES_DIR" $(( SYSTEM_ZIP_BYTES + VENDOR_ZIP_BYTES ))
-    mkdir -p "$IMAGES_DIR"
+    # Images must land in a waydroid "preinstalled_images_path" so that
+    # `waydroid init` skips OTA URL validation entirely (sets system_ota=None).
+    _check_disk_space "$PREINSTALLED_IMAGES_DIR" $(( SYSTEM_ZIP_BYTES + VENDOR_ZIP_BYTES ))
+    mkdir -p "$PREINSTALLED_IMAGES_DIR"
 
     log_info "Extracting system.img…"
-    unzip -o "$SYSTEM_ZIP" "system.img" -d "$IMAGES_DIR" >/dev/null
-    [[ -s "${IMAGES_DIR}/system.img" ]] || die "system.img not found or empty after extraction."
-    _ensure_raw_ext4 "${IMAGES_DIR}/system.img"
-    log_ok "system.img installed ($(du -h "${IMAGES_DIR}/system.img" | awk '{print $1}'))."
+    unzip -o "$SYSTEM_ZIP" "system.img" -d "$PREINSTALLED_IMAGES_DIR" >/dev/null
+    [[ -s "${PREINSTALLED_IMAGES_DIR}/system.img" ]] || die "system.img not found or empty after extraction."
+    _ensure_raw_ext4 "${PREINSTALLED_IMAGES_DIR}/system.img"
+    log_ok "system.img installed ($(du -h "${PREINSTALLED_IMAGES_DIR}/system.img" | awk '{print $1}'))."
 
     log_info "Extracting vendor.img…"
-    unzip -o "$VENDOR_ZIP" "vendor.img" -d "$IMAGES_DIR" >/dev/null
-    [[ -s "${IMAGES_DIR}/vendor.img" ]] || die "vendor.img not found or empty after extraction."
-    _ensure_raw_ext4 "${IMAGES_DIR}/vendor.img"
-    log_ok "vendor.img installed ($(du -h "${IMAGES_DIR}/vendor.img" | awk '{print $1}'))."
-
-    # Persist ZIPs so waydroid init (and manual reinit) can reference them via file://.
-    # TMP_DIR is wiped on exit, so copy to a stable OTA directory now.
-    log_info "Persisting OTA ZIPs for future reinit…"
-    mkdir -p "$OTA_DIR"
-    cp -f "$SYSTEM_ZIP" "${OTA_DIR}/system.zip"
-    cp -f "$VENDOR_ZIP"  "${OTA_DIR}/vendor.zip"
+    unzip -o "$VENDOR_ZIP" "vendor.img" -d "$PREINSTALLED_IMAGES_DIR" >/dev/null
+    [[ -s "${PREINSTALLED_IMAGES_DIR}/vendor.img" ]] || die "vendor.img not found or empty after extraction."
+    _ensure_raw_ext4 "${PREINSTALLED_IMAGES_DIR}/vendor.img"
+    log_ok "vendor.img installed ($(du -h "${PREINSTALLED_IMAGES_DIR}/vendor.img" | awk '{print $1}'))."
 }
 
 # ─── Waydroid container init ──────────────────────────────────────────────────
 _init_waydroid_container() {
     rm -rf /var/lib/waydroid/lxc/waydroid
     log_info "Creating Waydroid container config…"
-    # waydroid 1.4+ requires explicit -s/-v OTA URLs; -i alone no longer works.
-    # Point to the persisted ZIPs in OTA_DIR so init succeeds without network access
-    # and the same paths remain valid for future manual reinit.
+    # Images are in PREINSTALLED_IMAGES_DIR (/usr/share/waydroid-extra/images).
+    # waydroid init detects them, sets system_ota=None, and skips OTA URL
+    # validation — no -s/-v flags needed. `sudo waydroid init` also works.
     waydroid init -f \
-        -s "file://${OTA_DIR}/system.zip" \
-        -v "file://${OTA_DIR}/vendor.zip" \
         || log_warn "waydroid init reported an error — container may still start."
 }
 
@@ -593,9 +586,7 @@ main() {
     echo "    waydroid session stop       # stop the session" >&2
     echo "" >&2
     echo "  To reinitialize waydroid (e.g. after a kernel update):" >&2
-    echo "    sudo waydroid init -f \\" >&2
-    echo "      -s file://${OTA_DIR}/system.zip \\" >&2
-    echo "      -v file://${OTA_DIR}/vendor.zip" >&2
+    echo "    sudo waydroid init -f" >&2
     if [[ "$PROFILE" != "none" ]]; then
         echo "" >&2
         echo "  Switch device profile at any time:" >&2

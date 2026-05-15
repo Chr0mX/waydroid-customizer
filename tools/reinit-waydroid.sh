@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# reinit-waydroid.sh – Reinitialize the Waydroid container using persisted OTA ZIPs.
+# reinit-waydroid.sh – Reinitialize the Waydroid container using preinstalled images.
 #
-# waydroid 1.4+ requires explicit -s (system OTA) and -v (vendor OTA) ZIP paths.
-# Running bare `waydroid init` without these fails. This script provides them
-# from the OTA ZIPs saved by install.sh, downloading them if not yet present.
+# waydroid init skips OTA URL validation when images are found in a
+# "preinstalled_images_path" (/usr/share/waydroid-extra/images). This script
+# ensures images are there, then runs `waydroid init -f` — no OTA URLs needed.
 #
 # Usage:
-#   sudo bash reinit-waydroid.sh [--release vDATE-custom]
+#   sudo bash reinit-waydroid.sh [OPTIONS]
 #
 # Options:
-#   --release  vDATE-custom   Release tag to download ZIPs from (default: latest)
-#   --variant  vanilla|gapps  Required only if OTA ZIPs are missing (default: gapps)
+#   --release  vDATE-custom   Release tag to download (default: latest)
+#   --variant  vanilla|gapps  Required only if images are missing (default: gapps)
 #   --help                    Show this help
 set -euo pipefail
 
 readonly RELEASE_REPO="chr0mx/waydroid-customizer"
-readonly OTA_DIR="/var/lib/waydroid/ota"
+readonly PREINSTALLED_IMAGES_DIR="/usr/share/waydroid-extra/images"
 readonly TMP_DIR="/tmp/waydroid-reinit-$$"
 readonly SYSTEM_ZIP_BYTES=$(( 450 * 1024 * 1024 ))
 readonly VENDOR_ZIP_BYTES=$(( 200 * 1024 * 1024 ))
@@ -29,7 +29,7 @@ die()      { echo "[ERROR] $(_ts) $*" >&2; exit 1; }
 RELEASE_TAG=""
 VARIANT="gapps"
 
-usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -18; exit 0; }
+usage() { grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -17; exit 0; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -67,15 +67,16 @@ _fetch_release_tag() {
     log_ok "Latest release: $RELEASE_TAG"
 }
 
-_ensure_ota_zips() {
-    if [[ -f "${OTA_DIR}/system.zip" && -f "${OTA_DIR}/vendor.zip" ]]; then
-        log_info "Using persisted OTA ZIPs from ${OTA_DIR}."
+_ensure_images() {
+    local sys="${PREINSTALLED_IMAGES_DIR}/system.img"
+    local vnd="${PREINSTALLED_IMAGES_DIR}/vendor.img"
+
+    if [[ -f "$sys" && -f "$vnd" ]]; then
+        log_info "Images already present in ${PREINSTALLED_IMAGES_DIR}."
         return 0
     fi
 
-    log_warn "OTA ZIPs not found in ${OTA_DIR} — downloading from GitHub Releases."
-    log_warn "(This happens once; ZIPs will be saved for future reinit.)"
-
+    log_warn "Images not found in ${PREINSTALLED_IMAGES_DIR} — downloading from GitHub Releases."
     _fetch_release_tag
 
     local date_tag="${RELEASE_TAG#v}"
@@ -84,7 +85,7 @@ _ensure_ota_zips() {
     local base="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}"
     local arch="waydroid_x86_64"
 
-    mkdir -p "$TMP_DIR" "$OTA_DIR"
+    mkdir -p "$TMP_DIR" "$PREINSTALLED_IMAGES_DIR"
 
     local sys_zip="${TMP_DIR}/system.zip"
     local vnd_zip="${TMP_DIR}/vendor.zip"
@@ -92,13 +93,13 @@ _ensure_ota_zips() {
     _download "${base}/waydroid-custom-${date_tag}-${variant_upper}-${arch}-system.zip" "$sys_zip"
     _download "${base}/waydroid-custom-${date_tag}-MAINLINE-${arch}-vendor.zip"         "$vnd_zip"
 
-    cp -f "$sys_zip" "${OTA_DIR}/system.zip"
-    cp -f "$vnd_zip"  "${OTA_DIR}/vendor.zip"
-    log_ok "OTA ZIPs saved to ${OTA_DIR}."
+    unzip -o "$sys_zip" "system.img" -d "$PREINSTALLED_IMAGES_DIR" >/dev/null
+    unzip -o "$vnd_zip" "vendor.img" -d "$PREINSTALLED_IMAGES_DIR" >/dev/null
+    log_ok "Images extracted to ${PREINSTALLED_IMAGES_DIR}."
 }
 
 main() {
-    _ensure_ota_zips
+    _ensure_images
 
     log_info "Stopping Waydroid…"
     waydroid session stop 2>/dev/null || true
@@ -107,10 +108,9 @@ main() {
 
     rm -rf /var/lib/waydroid/lxc/waydroid
     log_info "Reinitializing Waydroid container…"
-    waydroid init -f \
-        -s "file://${OTA_DIR}/system.zip" \
-        -v "file://${OTA_DIR}/vendor.zip" \
-        || die "waydroid init failed."
+    # waydroid detects images in PREINSTALLED_IMAGES_DIR and sets system_ota=None,
+    # bypassing the OTA URL requirement.
+    waydroid init -f || die "waydroid init failed."
 
     systemctl start waydroid-container 2>/dev/null || true
     log_ok "Done. Run: waydroid show-full-ui"

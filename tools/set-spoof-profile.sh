@@ -90,18 +90,27 @@ _find_build_prop() {
 
 # ── Patch build.prop with profile props ──────────────────────────────────────
 # Replaces matching keys in-place; appends any keys that are missing.
-# JSON is piped via stdin; writes to a temp file then renames atomically
-# so a failure mid-write never leaves build.prop in a corrupt state.
+# JSON is written to a temp file so there is no stdin conflict between
+# the heredoc (Python source) and a pipe.  Output goes to a second temp
+# file that is renamed atomically so a mid-write failure never corrupts
+# the original build.prop.
 _patch_build_prop() {
     local prop_file="$1" json="$2"
     [[ -f "$prop_file" ]] || { warn "build.prop not found at $prop_file — skipping."; return 0; }
-    local tmp="${prop_file}.spoof-tmp"
-    printf '%s' "$json" | python3 - "$prop_file" "$tmp" <<'PYEOF'
+    local json_tmp out_tmp
+    json_tmp="$(mktemp /tmp/spoof-json-XXXXXX.json)"
+    out_tmp="${prop_file}.spoof-tmp"
+    printf '%s' "$json" > "$json_tmp"
+
+    python3 - "$prop_file" "$json_tmp" "$out_tmp" <<'PYEOF'
 import sys, json, os
 
 prop_file = sys.argv[1]
-tmp_file  = sys.argv[2]
-props = json.load(sys.stdin).get("props", {})
+json_file = sys.argv[2]
+tmp_file  = sys.argv[3]
+
+with open(json_file) as f:
+    props = json.load(f).get("props", {})
 
 with open(prop_file) as f:
     lines = f.read().splitlines()
@@ -127,8 +136,10 @@ with open(tmp_file, "w") as f:
     f.flush()
     os.fsync(f.fileno())
 PYEOF
-    [[ -s "$tmp" ]] || { rm -f "$tmp"; die "Patching produced empty build.prop — aborting to avoid corruption."; }
-    mv "$tmp" "$prop_file"
+
+    rm -f "$json_tmp"
+    [[ -s "$out_tmp" ]] || { rm -f "$out_tmp"; die "Patching produced empty build.prop — aborting to avoid corruption."; }
+    mv "$out_tmp" "$prop_file"
     log "Patched: $(basename "$prop_file")"
 }
 

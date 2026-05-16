@@ -69,7 +69,8 @@ _mount_image() {
 
 _umount_image() {
     local mnt="$1"
-    umount "$mnt" 2>/dev/null || true
+    sync 2>/dev/null || true
+    umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
     rmdir  "$mnt" 2>/dev/null || true
 }
 
@@ -89,14 +90,18 @@ _find_build_prop() {
 
 # ── Patch build.prop with profile props ──────────────────────────────────────
 # Replaces matching keys in-place; appends any keys that are missing.
+# JSON is piped via stdin; writes to a temp file then renames atomically
+# so a failure mid-write never leaves build.prop in a corrupt state.
 _patch_build_prop() {
     local prop_file="$1" json="$2"
     [[ -f "$prop_file" ]] || { warn "build.prop not found at $prop_file — skipping."; return 0; }
-    python3 - "$prop_file" "$json" <<'PYEOF'
-import sys, json
+    local tmp="${prop_file}.spoof-tmp"
+    printf '%s' "$json" | python3 - "$prop_file" "$tmp" <<'PYEOF'
+import sys, json, os
 
 prop_file = sys.argv[1]
-props = json.loads(sys.argv[2]).get("props", {})
+tmp_file  = sys.argv[2]
+props = json.load(sys.stdin).get("props", {})
 
 with open(prop_file) as f:
     lines = f.read().splitlines()
@@ -116,9 +121,14 @@ for k, v in props.items():
     if k not in applied:
         result.append(f"{k}={v}")
 
-with open(prop_file, "w") as f:
-    f.write("\n".join(result) + "\n")
+content = "\n".join(result) + "\n"
+with open(tmp_file, "w") as f:
+    f.write(content)
+    f.flush()
+    os.fsync(f.fileno())
 PYEOF
+    [[ -s "$tmp" ]] || { rm -f "$tmp"; die "Patching produced empty build.prop — aborting to avoid corruption."; }
+    mv "$tmp" "$prop_file"
     log "Patched: $(basename "$prop_file")"
 }
 
@@ -156,10 +166,13 @@ apply_profile() {
     # Ensure mounts are cleaned up on exit
     trap "_umount_image '${mnt_sys}'; _umount_image '${mnt_vnd}'" EXIT
 
+    [[ -f "${images_path}/system.img" ]] || die "system.img not found in ${images_path}. Run the installer first."
+    [[ -f "${images_path}/vendor.img" ]] || die "vendor.img not found in ${images_path}. Run the installer first."
+
     log "Stopping Waydroid…"
     waydroid session stop 2>/dev/null || true
     systemctl stop waydroid-container 2>/dev/null || true
-    sleep 2
+    sleep 5
 
     # ── Patch system.img ──────────────────────────────────────────────────────
     log "Mounting system.img…"

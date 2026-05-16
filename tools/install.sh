@@ -131,7 +131,8 @@ _download_with_retry() {
     local url="$1" dest="$2"
 
     local content_length
-    content_length="$(curl -fsI --connect-timeout 10 "$url" 2>/dev/null \
+    local content_length
+    content_length="$(curl -fsI --http1.1 --connect-timeout 10 "$url" 2>/dev/null \
         | grep -i '^content-length:' | tail -1 | tr -d '[:space:]' | cut -d: -f2)"
     if [[ "$content_length" =~ ^[0-9]+$ && "$content_length" -gt 0 ]]; then
         log_info "File size: $(_human_size "$content_length") — this may take several minutes."
@@ -141,7 +142,7 @@ _download_with_retry() {
     while (( attempt < 3 )); do
         (( attempt++ )) || true
         log_info "Downloading $(basename "$dest") (attempt $attempt/3)…"
-        if curl -fL --progress-bar --connect-timeout 30 --max-time 600 \
+        if curl -fL --http1.1 --progress-bar --connect-timeout 30 --max-time 600 \
                 "$url" -o "$dest" 2>&1; then
             [[ -s "$dest" ]] || { log_warn "Downloaded file is empty."; rm -f "$dest"; false; } && return 0
         fi

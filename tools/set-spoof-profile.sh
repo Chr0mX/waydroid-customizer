@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # set-spoof-profile.sh – Apply a device spoof profile to Waydroid.
 #
-# Patches build.prop directly inside system.img and vendor.img so that
-# ro.* properties take effect on next boot.  Works both as a local script
-# and piped via curl — profiles are fetched from GitHub when the local
-# repo is not present.
+# Writes profile properties into /var/lib/waydroid/waydroid_base.prop, which
+# Waydroid injects into the LXC container at startup (before Android's early
+# init), so ro.* properties are respected without loop-mounting images.
 #
 # Usage:
 #   sudo bash set-spoof-profile.sh <profile>
@@ -21,9 +20,8 @@ set -euo pipefail
 readonly RELEASE_REPO="chr0mx/waydroid-customizer"
 readonly PROFILES_RAW_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/main/modules/spoof/profiles"
 readonly VALID_PROFILES=(pixel-5 pixel-4a samsung-s21 generic-x86)
-readonly SPOOF_DIR="${WAYDROID_DATA_DIR:-/var/lib/waydroid/data}/waydroid-spoof"
-readonly WAYDROID_CFG="/var/lib/waydroid/waydroid.cfg"
-readonly DEFAULT_IMAGES_DIR="/usr/share/waydroid-extra/images"
+readonly SPOOF_DIR="/var/lib/waydroid/waydroid-spoof"
+readonly BASE_PROP="/var/lib/waydroid/waydroid_base.prop"
 
 _ts()  { date '+%H:%M:%S'; }
 log()  { echo "[INFO]  $(_ts) $*" >&2; }
@@ -48,55 +46,13 @@ _profile_json() {
     fi
 }
 
-# ── Image path from waydroid.cfg ─────────────────────────────────────────────
-_get_images_path() {
-    python3 -c "
-import configparser
-cfg = configparser.ConfigParser()
-cfg.read('${WAYDROID_CFG}')
-print(cfg.get('waydroid', 'images_path', fallback='${DEFAULT_IMAGES_DIR}'))
-" 2>/dev/null || echo "$DEFAULT_IMAGES_DIR"
-}
-
-# ── Loop-mount helpers ────────────────────────────────────────────────────────
-_mount_image() {
-    local img="$1" mnt="$2"
-    [[ -f "$img" ]] || die "Image not found: $img"
-    mkdir -p "$mnt"
-    e2fsck -fy "$img" &>/dev/null || true
-    mount -o loop,rw "$img" "$mnt" || die "Failed to mount $img"
-}
-
-_umount_image() {
-    local mnt="$1"
-    sync 2>/dev/null || true
-    umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
-    rmdir  "$mnt" 2>/dev/null || true
-}
-
-_find_build_prop() {
-    local root="$1" mode="$2"
-    case "$mode" in
-        system)
-            if   [[ -f "${root}/system/build.prop" ]]; then echo "${root}/system/build.prop"
-            elif [[ -f "${root}/build.prop"         ]]; then echo "${root}/build.prop"
-            fi ;;
-        vendor)
-            if   [[ -f "${root}/vendor/build.prop" ]]; then echo "${root}/vendor/build.prop"
-            elif [[ -f "${root}/build.prop"         ]]; then echo "${root}/build.prop"
-            fi ;;
-    esac
-}
-
-# ── Patch build.prop with profile props ──────────────────────────────────────
+# ── Patch a prop file with profile props ──────────────────────────────────────
 # Replaces matching keys in-place; appends any keys that are missing.
-# JSON is written to a temp file so there is no stdin conflict between
-# the heredoc (Python source) and a pipe.  Output goes to a second temp
-# file that is renamed atomically so a mid-write failure never corrupts
-# the original build.prop.
-_patch_build_prop() {
+# JSON is written to a temp file to avoid stdin conflict with the heredoc.
+# Output is written atomically via a temp file + rename.
+_patch_prop_file() {
     local prop_file="$1" json="$2"
-    [[ -f "$prop_file" ]] || { warn "build.prop not found at $prop_file — skipping."; return 0; }
+    [[ -f "$prop_file" ]] || touch "$prop_file"
     local json_tmp out_tmp
     json_tmp="$(mktemp /tmp/spoof-json-XXXXXX.json)"
     out_tmp="${prop_file}.spoof-tmp"
@@ -138,9 +94,51 @@ with open(tmp_file, "w") as f:
 PYEOF
 
     rm -f "$json_tmp"
-    [[ -s "$out_tmp" ]] || { rm -f "$out_tmp"; die "Patching produced empty build.prop — aborting to avoid corruption."; }
+    [[ -s "$out_tmp" ]] || { rm -f "$out_tmp"; die "Patching produced empty file — aborting."; }
     mv "$out_tmp" "$prop_file"
     log "Patched: $(basename "$prop_file")"
+}
+
+# ── Remove profile keys from a prop file ──────────────────────────────────────
+_remove_props_from_file() {
+    local prop_file="$1" json="$2"
+    [[ -f "$prop_file" ]] || return 0
+    local json_tmp out_tmp
+    json_tmp="$(mktemp /tmp/spoof-json-XXXXXX.json)"
+    out_tmp="${prop_file}.spoof-tmp"
+    printf '%s' "$json" > "$json_tmp"
+
+    python3 - "$prop_file" "$json_tmp" "$out_tmp" <<'PYEOF'
+import sys, json, os
+
+prop_file = sys.argv[1]
+json_file = sys.argv[2]
+tmp_file  = sys.argv[3]
+
+with open(json_file) as f:
+    keys = set(json.load(f).get("props", {}).keys())
+
+with open(prop_file) as f:
+    lines = f.read().splitlines()
+
+result = []
+for line in lines:
+    if "=" in line and not line.startswith("#"):
+        key = line.split("=", 1)[0]
+        if key in keys:
+            continue
+    result.append(line)
+
+content = "\n".join(result) + "\n"
+with open(tmp_file, "w") as f:
+    f.write(content)
+    f.flush()
+    os.fsync(f.fileno())
+PYEOF
+
+    rm -f "$json_tmp"
+    mv "$out_tmp" "$prop_file"
+    log "Cleared profile keys from $(basename "$prop_file")"
 }
 
 # ── Subcommands ───────────────────────────────────────────────────────────────
@@ -153,7 +151,7 @@ list_profiles() {
             "import sys,json; d=json.load(sys.stdin); print(d.get('description',''))" 2>/dev/null || echo "")"
         printf "  %-16s  %s\n" "$p" "$desc"
     done
-    echo "  none              Remove active profile (revert to installed image default)"
+    echo "  none              Remove active profile (clear waydroid_base.prop entries)"
 }
 
 apply_profile() {
@@ -168,47 +166,15 @@ apply_profile() {
     json="$(_profile_json "$profile")"
     [[ -n "$json" ]] || die "Profile JSON is empty."
 
-    local images_path
-    images_path="$(_get_images_path)"
-    log "Images path: ${images_path}"
-
-    local mnt_sys="/tmp/waydroid-spoof-sys-$$"
-    local mnt_vnd="/tmp/waydroid-spoof-vnd-$$"
-    # Ensure mounts are cleaned up on exit
-    trap "_umount_image '${mnt_sys}'; _umount_image '${mnt_vnd}'" EXIT
-
-    [[ -f "${images_path}/system.img" ]] || die "system.img not found in ${images_path}. Run the installer first."
-    [[ -f "${images_path}/vendor.img" ]] || die "vendor.img not found in ${images_path}. Run the installer first."
+    [[ -d /var/lib/waydroid ]] || die "/var/lib/waydroid not found. Run the installer first."
 
     log "Stopping Waydroid…"
     waydroid session stop 2>/dev/null || true
     systemctl stop waydroid-container 2>/dev/null || true
-    sleep 5
+    sleep 2
 
-    # ── Patch system.img ──────────────────────────────────────────────────────
-    log "Mounting system.img…"
-    _mount_image "${images_path}/system.img" "$mnt_sys"
-    local bp_sys
-    bp_sys="$(_find_build_prop "$mnt_sys" system)"
-    _patch_build_prop "$bp_sys" "$json"
-    _umount_image "$mnt_sys"
-
-    # ── Patch vendor.img (ro.product.* only) ─────────────────────────────────
-    local vendor_json
-    vendor_json="$(printf '%s' "$json" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-d['props'] = {k: v for k, v in d['props'].items() if k.startswith('ro.product.')}
-print(json.dumps(d))
-")"
-    log "Mounting vendor.img…"
-    _mount_image "${images_path}/vendor.img" "$mnt_vnd"
-    local bp_vnd
-    bp_vnd="$(_find_build_prop "$mnt_vnd" vendor)"
-    _patch_build_prop "$bp_vnd" "$vendor_json"
-    _umount_image "$mnt_vnd"
-
-    trap - EXIT
+    log "Writing properties to waydroid_base.prop…"
+    _patch_prop_file "$BASE_PROP" "$json"
 
     # ── Record active profile on host ─────────────────────────────────────────
     mkdir -p "$SPOOF_DIR"
@@ -223,19 +189,40 @@ for k, v in d.get('props', {}).items():
     systemctl start waydroid-container 2>/dev/null || true
 
     echo >&2
-    ok "Profile '${profile}' applied — build.prop patched in both images."
+    ok "Profile '${profile}' applied — properties written to waydroid_base.prop."
     echo "  Run: waydroid show-full-ui" >&2
 }
 
 clear_profile() {
-    warn "--clear cannot undo build.prop patches already written to the images."
-    warn "To restore the original profile, reinstall or re-run set-spoof-profile.sh <profile>."
+    local cleared=0
+
     if [[ -f "${SPOOF_DIR}/active.prop" ]]; then
+        # Build a minimal JSON from active.prop so _remove_props_from_file can strip the keys
+        local active_json
+        active_json="$(python3 -c "
+import sys, json
+props = {}
+with open('${SPOOF_DIR}/active.prop') as f:
+    for line in f:
+        line = line.strip()
+        if '=' in line and not line.startswith('#'):
+            k, v = line.split('=', 1)
+            props[k] = v
+print(json.dumps({'props': props}))
+")"
+        _remove_props_from_file "$BASE_PROP" "$active_json"
         rm "${SPOOF_DIR}/active.prop"
-        ok "active.prop removed."
-    else
-        echo "No active.prop found." >&2
+        ok "Profile cleared from waydroid_base.prop."
+        cleared=1
     fi
+
+    [[ "$cleared" -eq 1 ]] || echo "No active profile found." >&2
+
+    log "Restarting Waydroid…"
+    waydroid session stop 2>/dev/null || true
+    systemctl stop waydroid-container 2>/dev/null || true
+    sleep 2
+    systemctl start waydroid-container 2>/dev/null || true
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────

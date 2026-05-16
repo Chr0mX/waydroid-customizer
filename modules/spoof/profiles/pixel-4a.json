@@ -35,9 +35,7 @@
     "ro.boot.veritymode": "enforcing",
     "ro.boot.warranty_bit": "0",
     "ro.warranty_bit": "0",
-    "ro.board.platform": "lahaina",
-    "ro.hardware.egl": "adreno",
-    "ro.hardware.vulkan": "adreno",
+    "ro.hardware.egl": "emulation",
     "ro.opengles.version": "196610"
   }
 }

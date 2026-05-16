@@ -1,21 +1,10 @@
-# waydroid-spoof.rc – Runtime device identity loader
+# waydroid-spoof.rc – Runtime device identity support
 # Placed in /system/etc/init/ by the spoof module installer.
 #
-# This service runs early in the boot sequence and applies property overrides
-# from /data/waydroid-spoof/active.prop when present.  The file can be updated
-# by the host without rebuilding images, enabling per-session profile switching.
+# Creates the host-writable spoof directory inside the container's /data.
+# Profile switching is handled host-side (set-spoof-profile.sh patches
+# build.prop directly — setprop cannot change ro.* properties after boot).
 
 on post-fs-data
     # Ensure the spoof directory exists with correct permissions
     mkdir /data/waydroid-spoof 0750 system system
-
-on property:sys.boot_completed=1
-    start waydroid-spoof-loader
-
-service waydroid-spoof-loader /system/bin/waydroid-spoof-loader
-    class late_start
-    user system
-    group system
-    oneshot
-    disabled
-    seclabel u:r:shell:s0

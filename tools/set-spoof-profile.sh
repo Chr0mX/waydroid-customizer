@@ -1,51 +1,133 @@
 #!/usr/bin/env bash
 # tools/set-spoof-profile.sh
 #
-# Host-side helper: apply a device spoof profile to Waydroid (LineageOS 18.1).
+# Apply a Waydroid device spoof profile – works both locally (cloned repo)
+# and online (piped from curl).
 #
-# Properties are written to two places:
-#   1. /var/lib/waydroid/waydroid.cfg [properties]  – survives waydroid init/upgrade
-#   2. /var/lib/waydroid/waydroid_base.prop          – immediate effect on next boot
+# Online usage (run as root):
+#   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+#     | sudo bash -s -- --list
+#   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+#     | sudo bash -s -- pixel-5
+#   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+#     | sudo bash -s -- --clear
 #
-# Then 'waydroid upgrade --offline' syncs both and regenerates waydroid_base.prop.
-# Based on: https://github.com/lil-xhris/Waydroid-total-spoof
+# Local usage (from a cloned repo):
+#   sudo bash tools/set-spoof-profile.sh <profile_name>
+#   sudo bash tools/set-spoof-profile.sh --list
+#   sudo bash tools/set-spoof-profile.sh --clear
 #
-# Usage (run as root):
-#   sudo bash set-spoof-profile.sh <profile_name>
-#   sudo bash set-spoof-profile.sh --list
-#   sudo bash set-spoof-profile.sh --clear
+# Properties are written to:
+#   - /var/lib/waydroid/waydroid.cfg  [properties]  (persists across waydroid init)
+#   - /var/lib/waydroid/waydroid_base.prop           (immediate effect on next boot)
+# Then activated with 'waydroid upgrade --offline'.
 #
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROFILES_DIR="${REPO_ROOT}/modules/spoof/profiles"
+# ── Remote profile source ─────────────────────────────────────────────────────
+readonly REPO_RAW="https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main"
+readonly PROFILES_REMOTE="${REPO_RAW}/modules/spoof/profiles"
+readonly PROFILES_API="https://api.github.com/repos/chr0mx/waydroid-customizer/contents/modules/spoof/profiles"
 
+# ── Waydroid paths ────────────────────────────────────────────────────────────
 WAYDROID_CFG="${WAYDROID_CFG:-/var/lib/waydroid/waydroid.cfg}"
 WAYDROID_BASE_PROP="${WAYDROID_BASE_PROP:-/var/lib/waydroid/waydroid_base.prop}"
-# Tracks the keys we injected so --clear can remove exactly those
 ACTIVE_KEYS_FILE="/var/lib/waydroid/waydroid-spoof-active-keys"
 
+# ── Mode detection ────────────────────────────────────────────────────────────
+# Determine if running from a local clone or piped from curl.
+_detect_local_profiles_dir() {
+    local src="${BASH_SOURCE[0]:-}"
+    if [[ -n "$src" && "$src" != "/dev/stdin" && "$src" != "bash" ]]; then
+        local candidate
+        candidate="$(cd "$(dirname "$src")/../modules/spoof/profiles" 2>/dev/null && pwd || true)"
+        if [[ -d "$candidate" ]]; then
+            echo "$candidate"
+            return
+        fi
+    fi
+    echo ""
+}
+PROFILES_LOCAL="$(_detect_local_profiles_dir)"
+
+# ── Logging ───────────────────────────────────────────────────────────────────
 log() { echo "[spoof] $*" >&2; }
 ok()  { echo "[spoof] OK: $*" >&2; }
 die() { echo "[spoof] ERROR: $*" >&2; exit 1; }
 
+# ── Preflight ─────────────────────────────────────────────────────────────────
 [[ "$(id -u)" -eq 0 ]] || die "Run as root: sudo bash $0 $*"
 command -v python3 &>/dev/null || die "python3 is required."
 command -v waydroid &>/dev/null || die "waydroid is not in PATH."
 
-list_profiles() {
-    echo "Available spoof profiles:"
-    for f in "${PROFILES_DIR}"/*.json; do
-        local id desc
-        id="$(basename "$f" .json)"
-        desc="$(python3 -c "import json; p=json.load(open('$f')); print(p.get('description',''))")"
-        printf "  %-22s  %s\n" "$id" "$desc"
-    done
+# ── Profile resolution ────────────────────────────────────────────────────────
+# Returns the path to a profile JSON, fetching from GitHub if not local.
+_resolve_profile_json() {
+    local profile="$1"
+
+    if [[ -n "$PROFILES_LOCAL" ]]; then
+        local local_path="${PROFILES_LOCAL}/${profile}.json"
+        [[ -f "$local_path" ]] || die "Profile not found: '${profile}' (looked in ${PROFILES_LOCAL})"
+        echo "$local_path"
+        return
+    fi
+
+    # Online: fetch to a temp file
+    local tmp
+    tmp="$(mktemp /tmp/waydroid-spoof-XXXXXX.json)"
+    local url="${PROFILES_REMOTE}/${profile}.json"
+    log "Fetching profile '${profile}' from GitHub…"
+    curl -fsSL --http1.1 --connect-timeout 15 "$url" -o "$tmp" \
+        || die "Profile '${profile}' not found. Check --list for valid names."
+    echo "$tmp"
 }
 
-# Write every prop from a profile JSON into waydroid.cfg [properties].
-# Saves the list of injected keys to ACTIVE_KEYS_FILE for --clear.
+# ── List profiles ─────────────────────────────────────────────────────────────
+list_profiles() {
+    echo "Available spoof profiles:"
+
+    if [[ -n "$PROFILES_LOCAL" ]]; then
+        for f in "${PROFILES_LOCAL}"/*.json; do
+            local id desc
+            id="$(basename "$f" .json)"
+            desc="$(python3 -c "import json; p=json.load(open('$f')); print(p.get('description',''))")"
+            printf "  %-22s  %s\n" "$id" "$desc"
+        done
+        return
+    fi
+
+    # Online: fetch file listing from GitHub API, then each JSON for description
+    local listing
+    listing="$(curl -fsSL --http1.1 --connect-timeout 15 "$PROFILES_API" 2>/dev/null)" || {
+        # API unreachable – show known profiles
+        echo "  pixel-5       Google Pixel 5 (redfin) – Android 11 / SDK 30"
+        echo "  pixel-4a      Google Pixel 4a (sunfish) – Android 11 / SDK 30"
+        echo "  samsung-s21   Samsung Galaxy S21 (SM-G991B) – Android 11 / SDK 30"
+        echo "  generic-x86   Minimal identity – hides LineageOS/emulator markers"
+        return 0
+    }
+
+    local names
+    names="$(python3 -c "
+import json, sys
+files = json.loads(sys.stdin.read())
+for f in files:
+    if f['name'].endswith('.json'):
+        print(f['name'][:-5])
+" <<< "$listing")"
+
+    while IFS= read -r id; do
+        local tmp url desc
+        tmp="$(mktemp /tmp/waydroid-spoof-XXXXXX.json)"
+        url="${PROFILES_REMOTE}/${id}.json"
+        curl -fsSL --http1.1 --connect-timeout 10 "$url" -o "$tmp" 2>/dev/null
+        desc="$(python3 -c "import json; p=json.load(open('$tmp')); print(p.get('description',''))" 2>/dev/null || echo "")"
+        rm -f "$tmp"
+        printf "  %-22s  %s\n" "$id" "$desc"
+    done <<< "$names"
+}
+
+# ── Write to waydroid.cfg [properties] ───────────────────────────────────────
 _write_to_cfg() {
     local json_file="$1"
     python3 - "$json_file" "$WAYDROID_CFG" "$ACTIVE_KEYS_FILE" <<'PYEOF'
@@ -76,9 +158,7 @@ print(f"[spoof] cfg: wrote {len(injected)} props", file=sys.stderr)
 PYEOF
 }
 
-# Upsert every prop from a profile JSON directly into waydroid_base.prop.
-# Replace the line if key already exists, append if new.
-# This mirrors how lil-xhris/Waydroid-total-spoof (waydroid.sh) works.
+# ── Write to waydroid_base.prop (replace-or-append) ──────────────────────────
 _write_to_base_prop() {
     local json_file="$1"
     [[ -f "$WAYDROID_BASE_PROP" ]] || touch "$WAYDROID_BASE_PROP"
@@ -93,7 +173,6 @@ props   = profile.get("props", {})
 with open(prop_path, "r") as f:
     lines = f.readlines()
 
-# Index existing keys
 index = {}
 for i, line in enumerate(lines):
     stripped = line.rstrip("\n")
@@ -101,7 +180,6 @@ for i, line in enumerate(lines):
         k = stripped.split("=", 1)[0].strip()
         index[k] = i
 
-# Upsert
 for key, val in props.items():
     entry = f"{key}={val}\n"
     if key in index:
@@ -117,7 +195,7 @@ print(f"[spoof] base.prop: upserted {len(props)} props", file=sys.stderr)
 PYEOF
 }
 
-# Remove the previously injected keys from waydroid.cfg [properties].
+# ── Remove props from waydroid.cfg ────────────────────────────────────────────
 _remove_from_cfg() {
     python3 - "$ACTIVE_KEYS_FILE" "$WAYDROID_CFG" <<'PYEOF'
 import sys, configparser
@@ -143,7 +221,7 @@ print(f"[spoof] cfg: removed {removed} props", file=sys.stderr)
 PYEOF
 }
 
-# Remove the previously injected keys from waydroid_base.prop.
+# ── Remove props from waydroid_base.prop ─────────────────────────────────────
 _remove_from_base_prop() {
     [[ -f "$WAYDROID_BASE_PROP" ]] || return 0
     python3 - "$ACTIVE_KEYS_FILE" "$WAYDROID_BASE_PROP" <<'PYEOF'
@@ -175,14 +253,15 @@ print(f"[spoof] base.prop: removed {removed} props", file=sys.stderr)
 PYEOF
 }
 
+# ── Apply profile ─────────────────────────────────────────────────────────────
 apply_profile() {
     local profile="$1"
-    local json="${PROFILES_DIR}/${profile}.json"
 
-    [[ -f "$json" ]] \
-        || die "Profile not found: '${profile}' (looked in ${PROFILES_DIR})"
     [[ -f "$WAYDROID_CFG" ]] \
         || die "waydroid.cfg not found at ${WAYDROID_CFG}. Run: sudo waydroid init"
+
+    local json
+    json="$(_resolve_profile_json "$profile")"
 
     log "Stopping Waydroid…"
     waydroid session stop 2>/dev/null || true
@@ -195,6 +274,9 @@ apply_profile() {
     log "Writing to waydroid_base.prop…"
     _write_to_base_prop "$json"
 
+    # Clean up temp file if we fetched remotely
+    [[ -z "$PROFILES_LOCAL" ]] && rm -f "$json" || true
+
     log "Activating with waydroid upgrade --offline…"
     waydroid upgrade --offline 2>/dev/null \
         || log "waydroid upgrade returned non-zero (may be harmless)."
@@ -204,9 +286,10 @@ apply_profile() {
 
     ok "Profile '${profile}' applied."
     echo "  Start UI : waydroid show-full-ui" >&2
-    echo "  Revert   : sudo bash $0 --clear" >&2
+    echo "  Revert   : $(basename "$0") --clear" >&2
 }
 
+# ── Clear profile ─────────────────────────────────────────────────────────────
 clear_profile() {
     [[ -f "$WAYDROID_CFG" ]] \
         || die "waydroid.cfg not found at ${WAYDROID_CFG}."
@@ -239,6 +322,7 @@ clear_profile() {
     ok "Spoof cleared. Default identity will be used."
 }
 
+# ── Dispatch ──────────────────────────────────────────────────────────────────
 case "${1:---list}" in
     --list)  list_profiles ;;
     --clear) clear_profile ;;

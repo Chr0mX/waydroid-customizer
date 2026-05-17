@@ -295,6 +295,28 @@ init_waydroid() {
     log_ok "Waydroid initialised."
 }
 
+# ── Fix binder protocol for Android 11 ────────────────────────────────────────
+# Android 11 (LineageOS 18.1) only supports up to aidl2; waydroid init writes
+# aidl3 on recent waydroid versions, causing servicemanager to never appear.
+fix_binder_protocol() {
+    [[ -f "$WAYDROID_CFG" ]] || return 0
+    log_info "Setting binder protocol to aidl2 (required for Android 11)…"
+    python3 - "$WAYDROID_CFG" <<'PYEOF'
+import sys, configparser
+cfg_path = sys.argv[1]
+cfg = configparser.ConfigParser()
+cfg.read(cfg_path)
+section = "waydroid"
+if section not in cfg:
+    cfg[section] = {}
+cfg[section]["binder_protocol"] = "aidl2"
+cfg[section]["service_manager_protocol"] = "aidl2"
+with open(cfg_path, "w") as f:
+    cfg.write(f)
+PYEOF
+    log_ok "binder_protocol = aidl2, service_manager_protocol = aidl2"
+}
+
 # ── Overlay helpers ────────────────────────────────────────────────────────────
 _install_prebuilt_overlay() {
     local url="$1" md5="$2" cache_name="$3" overlay_dir="$4"
@@ -412,6 +434,7 @@ main() {
     resolve_release
     install_images
     init_waydroid
+    fix_binder_protocol
     install_ndk
     install_widevine
     apply_overlays

@@ -1,10 +1,18 @@
 {
   "name": "Generic x86 (passthrough)",
   "id": "generic-x86",
-  "description": "Minimal identity – keeps upstream Waydroid/LineageOS defaults",
+  "description": "Minimal identity – keeps device props, hides LineageOS/emulator markers",
   "props": {
     "ro.build.tags": "release-keys",
     "ro.build.type": "user",
+    "ro.build.version.release": "11",
+    "ro.build.version.sdk": "30",
+    "ro.vendor.build.tags": "release-keys",
+    "ro.vendor.build.type": "user",
+    "ro.odm.build.tags": "release-keys",
+
+    "ro.lineage.version": "18.1",
+    "ro.lineage.releasetype": "RELEASE",
 
     "ro.secure": "1",
     "ro.debuggable": "0",

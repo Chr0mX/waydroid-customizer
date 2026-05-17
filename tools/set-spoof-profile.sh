@@ -214,8 +214,8 @@ _patch_system_overlay() {
 
 # ── Patch vendor partition directly in vendor.img ────────────────────────────
 # Waydroid bind-mounts vendor.img separately; its files are NOT covered by the
-# overlayfs, so we must patch the image itself. A backup is created on first
-# run so --clear can restore the original.
+# overlayfs, so we must patch the image itself via a temporary loop mount.
+# A backup is created on first run so --clear can restore the original.
 #
 # Vendor props patched: ro.product.vendor.*, ro.soc.*, ro.hardware*,
 #                       ro.vendor.build.*, ro.boot.*
@@ -223,6 +223,7 @@ _patch_vendor_img() {
     local img="$1"
     local json_file="$2"
     local backup="${img}${VENDOR_IMG_BACKUP_SUFFIX}"
+    local filter="ro.product.vendor.,ro.soc.,ro.hardware,ro.vendor.build.,ro.boot."
 
     # Create backup only once (don't overwrite a prior backup with a spoofed copy)
     if [[ ! -f "$backup" ]]; then
@@ -230,26 +231,38 @@ _patch_vendor_img() {
         cp "$img" "$backup"
     fi
 
-    local orig_tmp patched_tmp
-    orig_tmp="$(mktemp /tmp/waydroid-vendor-orig-XXXXXX.prop)"
-    patched_tmp="$(mktemp /tmp/waydroid-vendor-patched-XXXXXX.prop)"
+    local mnt lodev
+    mnt="$(mktemp -d /tmp/waydroid-vnd-mnt-XXXXXX)"
 
-    _extract_build_prop "$img" "$orig_tmp" || {
-        rm -f "$orig_tmp" "$patched_tmp"
-        log "Could not read vendor build.prop – skipping vendor image patch"
+    lodev="$(losetup --find --show "$img" 2>/dev/null)" || {
+        rmdir "$mnt"
+        log "losetup failed – skipping vendor image patch"
         return 1
     }
 
-    local filter="ro.product.vendor.,ro.soc.,ro.hardware,ro.vendor.build.,ro.boot."
+    if ! mount -t ext4 -o rw "$lodev" "$mnt" 2>/dev/null; then
+        losetup --detach "$lodev" 2>/dev/null || true
+        rmdir "$mnt"
+        log "mount failed for vendor.img – skipping vendor image patch"
+        return 1
+    fi
+
+    local prop_path="${mnt}/build.prop"
+    if [[ ! -f "$prop_path" ]]; then
+        umount "$mnt"; losetup --detach "$lodev" 2>/dev/null; rmdir "$mnt"
+        log "build.prop not found in vendor.img root – skipping"
+        return 1
+    fi
+
     local n
-    n="$(_apply_prop_patch "$json_file" "$orig_tmp" "$patched_tmp" "$filter")"
+    n="$(_apply_prop_patch "$json_file" "$prop_path" "$prop_path" "$filter")"
 
-    # Write the patched file back into the EXT4 image
-    debugfs -w -R "write ${patched_tmp} /build.prop" "$img" 2>/dev/null \
-        || { rm -f "$orig_tmp" "$patched_tmp"; return 1; }
+    sync
+    umount "$mnt"
+    losetup --detach "$lodev" 2>/dev/null || true
+    rmdir "$mnt"
 
-    rm -f "$orig_tmp" "$patched_tmp"
-    log "vendor.img build.prop: patched ${n} props (image modified directly)"
+    log "vendor.img build.prop: patched ${n} props (loop-mounted, in-place)"
 }
 
 # ── Patch waydroid_base.prop (replace-or-append, fallback) ───────────────────
@@ -358,6 +371,13 @@ apply_profile() {
     # Fallback: waydroid_base.prop
     log "Patching waydroid_base.prop…"
     _patch_base_prop "$json"
+
+    # Clear Android's persistent property cache so it re-reads from build.prop
+    local prop_cache="${WAYDROID_DIR}/data/property/persistent_properties"
+    if [[ -f "$prop_cache" ]]; then
+        log "Clearing Android property cache…"
+        rm -f "$prop_cache"
+    fi
 
     # Clean up temp JSON if fetched remotely
     [[ -z "$PROFILES_LOCAL" ]] && rm -f "$json" || true

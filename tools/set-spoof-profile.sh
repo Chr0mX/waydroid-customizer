@@ -8,7 +8,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
 #     | sudo bash -s -- --list
 #   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
-#     | sudo bash -s -- pixel-5
+#     | sudo bash -s -- samsung-s21
 #   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
 #     | sudo bash -s -- --clear
 #
@@ -17,9 +17,15 @@
 #   sudo bash tools/set-spoof-profile.sh --list
 #   sudo bash tools/set-spoof-profile.sh --clear
 #
-# Props are patched into the overlay build.prop files so they load before
-# the system image's build.prop (where ro.* locks happen). Also written to
-# waydroid_base.prop as a belt-and-suspenders fallback.
+# Mechanism:
+#   System partition  → Waydroid overlayfs: a patched build.prop is written to
+#                       /var/lib/waydroid/overlay/system/ which Android reads
+#                       instead of the one baked into system.img.
+#   Vendor partition  → Direct image patch: vendor.img is patched in-place with
+#                       debugfs because Waydroid's overlayfs does not cover the
+#                       vendor partition (it is bind-mounted separately).
+#                       A backup is kept at vendor.img.spoof.bak for rollback.
+#   waydroid_base.prop → Written as a belt-and-suspenders fallback.
 #
 set -euo pipefail
 
@@ -32,8 +38,8 @@ readonly PROFILES_API="https://api.github.com/repos/chr0mx/waydroid-customizer/c
 readonly WAYDROID_DIR="/var/lib/waydroid"
 WAYDROID_BASE_PROP="${WAYDROID_BASE_PROP:-${WAYDROID_DIR}/waydroid_base.prop}"
 readonly OVERLAY_SYS="${WAYDROID_DIR}/overlay/system"
-readonly OVERLAY_VND="${WAYDROID_DIR}/overlay/vendor"
 readonly ACTIVE_KEYS_FILE="${WAYDROID_DIR}/waydroid-spoof-active-keys"
+readonly VENDOR_IMG_BACKUP_SUFFIX=".spoof.bak"
 
 # ── Mode detection ────────────────────────────────────────────────────────────
 _detect_local_profiles_dir() {
@@ -95,7 +101,7 @@ list_profiles() {
     listing="$(curl -fsSL --http1.1 --connect-timeout 15 "$PROFILES_API" 2>/dev/null)" || {
         echo "  pixel-5       Google Pixel 5 (redfin) – Android 11 / SDK 30"
         echo "  pixel-4a      Google Pixel 4a (sunfish) – Android 11 / SDK 30"
-        echo "  samsung-s21   Samsung Galaxy S21 (SM-G991B) – Android 11 / SDK 30"
+        echo "  samsung-s21   Samsung Galaxy S21 Snapdragon (SM-G991U) – Android 11 / SDK 30"
         echo "  generic-x86   Minimal identity – hides LineageOS/emulator markers"
         return 0
     }
@@ -131,47 +137,36 @@ _find_img() {
     return 1
 }
 
-# ── Patch a build.prop via overlayfs ─────────────────────────────────────────
-# Reads the original build.prop out of the EXT4 image using debugfs (no
-# loop-mount needed), patches in the profile props, and writes the result
-# to the Waydroid overlay directory so Android reads it before the image copy.
-_patch_overlay_build_prop() {
-    local img="$1"          # path to system.img or vendor.img
-    local overlay_dir="$2"  # /var/lib/waydroid/overlay/system or .../vendor
-    local json_file="$3"    # profile JSON
-    local keys_filter="${4:-}"  # optional: only patch keys matching this prefix
-
-    # Extract build.prop from image without mounting.
-    # Try /build.prop first (vendor/traditional layout), then /system/build.prop
-    # (system-as-root layout used by LineageOS 18.1).
-    local orig_tmp
-    orig_tmp="$(mktemp /tmp/waydroid-orig-build-XXXXXX.prop)"
-    debugfs -R 'cat /build.prop' "$img" > "$orig_tmp" 2>/dev/null || true
-    if [[ ! -s "$orig_tmp" ]]; then
-        debugfs -R 'cat /system/build.prop' "$img" > "$orig_tmp" 2>/dev/null || true
+# ── Extract build.prop from an EXT4 image (no loop-mount) ────────────────────
+# Tries /build.prop then /system/build.prop (system-as-root layout).
+_extract_build_prop() {
+    local img="$1"
+    local out="$2"
+    debugfs -R 'cat /build.prop' "$img" > "$out" 2>/dev/null || true
+    if [[ ! -s "$out" ]]; then
+        debugfs -R 'cat /system/build.prop' "$img" > "$out" 2>/dev/null || true
     fi
-    if [[ ! -s "$orig_tmp" ]]; then
-        rm -f "$orig_tmp"; return 1
-    fi
+    [[ -s "$out" ]]
+}
 
-    mkdir -p "$overlay_dir"
-    local dest="${overlay_dir}/build.prop"
-
-    python3 - "$json_file" "$orig_tmp" "$dest" "$keys_filter" <<'PYEOF'
+# ── Patch build.prop lines in-place (Python helper) ──────────────────────────
+# Usage: _apply_prop_patch <json_file> <src_prop> <dst_prop> <keys_filter>
+# keys_filter: empty = all props; otherwise comma-separated prefixes
+_apply_prop_patch() {
+    python3 - "$@" <<'PYEOF'
 import sys, json
 
-json_file, orig_path, dest_path, keys_filter = \
+json_file, src_path, dst_path, keys_filter = \
     sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 profile = json.load(open(json_file))
 props   = profile.get("props", {})
 
-# Optionally filter to a subset of keys (comma-separated prefixes).
 if keys_filter:
     prefixes = tuple(p for p in keys_filter.split(',') if p)
     props = {k: v for k, v in props.items() if k.startswith(prefixes)}
 
-with open(orig_path, "r", errors="replace") as f:
+with open(src_path, "r", errors="replace") as f:
     lines = f.readlines()
 
 index = {}
@@ -190,12 +185,71 @@ for key, val in props.items():
         index[key] = len(lines) - 1
     patched += 1
 
-with open(dest_path, "w") as f:
+with open(dst_path, "w") as f:
     f.writelines(lines)
 
-print(f"[spoof] overlay {dest_path}: patched {patched} props", file=sys.stderr)
+print(patched)
 PYEOF
+}
+
+# ── Patch system partition via Waydroid overlayfs ────────────────────────────
+# Waydroid's overlayfs covers /var/lib/waydroid/overlay/system → /system in
+# the container, so a build.prop here shadows the image copy.
+_patch_system_overlay() {
+    local img="$1"
+    local json_file="$2"
+
+    local orig_tmp
+    orig_tmp="$(mktemp /tmp/waydroid-orig-build-XXXXXX.prop)"
+    _extract_build_prop "$img" "$orig_tmp" || { rm -f "$orig_tmp"; return 1; }
+
+    mkdir -p "$OVERLAY_SYS"
+    local dest="${OVERLAY_SYS}/build.prop"
+
+    local n
+    n="$(_apply_prop_patch "$json_file" "$orig_tmp" "$dest" "")"
     rm -f "$orig_tmp"
+    log "system overlay build.prop: patched ${n} props"
+}
+
+# ── Patch vendor partition directly in vendor.img ────────────────────────────
+# Waydroid bind-mounts vendor.img separately; its files are NOT covered by the
+# overlayfs, so we must patch the image itself. A backup is created on first
+# run so --clear can restore the original.
+#
+# Vendor props patched: ro.product.vendor.*, ro.soc.*, ro.hardware*,
+#                       ro.vendor.build.*, ro.boot.*
+_patch_vendor_img() {
+    local img="$1"
+    local json_file="$2"
+    local backup="${img}${VENDOR_IMG_BACKUP_SUFFIX}"
+
+    # Create backup only once (don't overwrite a prior backup with a spoofed copy)
+    if [[ ! -f "$backup" ]]; then
+        log "Backing up vendor.img → $(basename "$backup")…"
+        cp "$img" "$backup"
+    fi
+
+    local orig_tmp patched_tmp
+    orig_tmp="$(mktemp /tmp/waydroid-vendor-orig-XXXXXX.prop)"
+    patched_tmp="$(mktemp /tmp/waydroid-vendor-patched-XXXXXX.prop)"
+
+    _extract_build_prop "$img" "$orig_tmp" || {
+        rm -f "$orig_tmp" "$patched_tmp"
+        log "Could not read vendor build.prop – skipping vendor image patch"
+        return 1
+    }
+
+    local filter="ro.product.vendor.,ro.soc.,ro.hardware,ro.vendor.build.,ro.boot."
+    local n
+    n="$(_apply_prop_patch "$json_file" "$orig_tmp" "$patched_tmp" "$filter")"
+
+    # Write the patched file back into the EXT4 image
+    debugfs -w -R "write ${patched_tmp} /build.prop" "$img" 2>/dev/null \
+        || { rm -f "$orig_tmp" "$patched_tmp"; return 1; }
+
+    rm -f "$orig_tmp" "$patched_tmp"
+    log "vendor.img build.prop: patched ${n} props (image modified directly)"
 }
 
 # ── Patch waydroid_base.prop (replace-or-append, fallback) ───────────────────
@@ -281,28 +335,31 @@ apply_profile() {
     ( cd / && systemctl stop waydroid-container 2>/dev/null ) || true
     sleep 1
 
-    # ── Primary: patch overlay build.prop files (loads before image build.prop)
-    local sys_img vnd_img
+    # System partition: overlay approach (non-destructive, reversible)
+    local sys_img
     if sys_img="$(_find_img system.img 2>/dev/null)"; then
-        log "Patching system overlay build.prop from ${sys_img}…"
-        _patch_overlay_build_prop "$sys_img" "$OVERLAY_SYS" "$json" "" \
+        log "Patching system overlay from ${sys_img}…"
+        _patch_system_overlay "$sys_img" "$json" \
             || log "system overlay patch failed – falling back to base.prop only"
     else
-        log "system.img not found – skipping overlay patch"
+        log "system.img not found – skipping system overlay patch"
     fi
 
+    # Vendor partition: direct image patch (overlayfs does not cover vendor)
+    local vnd_img
     if vnd_img="$(_find_img vendor.img 2>/dev/null)"; then
-        log "Patching vendor overlay build.prop from ${vnd_img}…"
-        _patch_overlay_build_prop "$vnd_img" "$OVERLAY_VND" "$json" \
-            "ro.product.vendor.,ro.soc.,ro.hardware,ro.vendor.build.,ro.boot." \
-            || log "vendor overlay patch failed (non-fatal)"
+        log "Patching vendor.img directly (overlayfs does not cover vendor)…"
+        _patch_vendor_img "$vnd_img" "$json" \
+            || log "vendor.img patch failed – ro.product.* may still show original values"
+    else
+        log "vendor.img not found – skipping vendor patch"
     fi
 
-    # ── Fallback: waydroid_base.prop (works if image has no baked identity)
+    # Fallback: waydroid_base.prop
     log "Patching waydroid_base.prop…"
     _patch_base_prop "$json"
 
-    # Clean up temp file if fetched remotely
+    # Clean up temp JSON if fetched remotely
     [[ -z "$PROFILES_LOCAL" ]] && rm -f "$json" || true
 
     log "Starting Waydroid container…"
@@ -325,9 +382,25 @@ clear_profile() {
     ( cd / && systemctl stop waydroid-container 2>/dev/null ) || true
     sleep 1
 
-    log "Removing overlay build.prop patches…"
-    rm -f "${OVERLAY_SYS}/build.prop" "${OVERLAY_VND}/build.prop"
+    # Remove system overlay build.prop
+    log "Removing system overlay build.prop…"
+    rm -f "${OVERLAY_SYS}/build.prop"
 
+    # Restore vendor.img from backup
+    local vnd_img vnd_bak
+    if vnd_img="$(_find_img vendor.img 2>/dev/null)"; then
+        vnd_bak="${vnd_img}${VENDOR_IMG_BACKUP_SUFFIX}"
+        if [[ -f "$vnd_bak" ]]; then
+            log "Restoring vendor.img from backup…"
+            cp "$vnd_bak" "$vnd_img"
+            rm -f "$vnd_bak"
+            log "vendor.img restored."
+        else
+            log "No vendor.img backup found – vendor props may still be spoofed"
+        fi
+    fi
+
+    # Remove from base.prop
     log "Removing patches from waydroid_base.prop…"
     _remove_from_base_prop
     rm -f "$ACTIVE_KEYS_FILE"

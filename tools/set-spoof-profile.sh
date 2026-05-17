@@ -214,9 +214,14 @@ _patch_system_overlay() {
 
 # ── Patch vendor partition directly in vendor.img ────────────────────────────
 # Waydroid bind-mounts vendor.img separately; its files are NOT covered by the
-# overlayfs, so we must patch the image itself via a temporary loop mount.
-# A backup is created on first run so --clear can restore the original.
+# overlayfs, so we must patch the image itself.
 #
+# Strategy (tried in order):
+#   1. Loop mount via losetup + mount (most reliable when available)
+#   2. fuse2fs (FUSE-based ext4 mount, no kernel loop device needed)
+#   3. e2cp   (e2tools; direct inode-level copy into the image)
+#
+# A backup is created on first run so --clear can restore the original.
 # Vendor props patched: ro.product.vendor.*, ro.soc.*, ro.hardware*,
 #                       ro.vendor.build.*, ro.boot.*
 _patch_vendor_img() {
@@ -231,38 +236,80 @@ _patch_vendor_img() {
         cp "$img" "$backup"
     fi
 
-    local mnt lodev
+    # Work on a copy in /tmp to sidestep any nodev/nosuid restrictions on the
+    # source filesystem; copy the patched result back when done.
+    local work_img mnt
+    work_img="$(mktemp /tmp/waydroid-vendor-work-XXXXXX.img)"
     mnt="$(mktemp -d /tmp/waydroid-vnd-mnt-XXXXXX)"
+    cp "$img" "$work_img"
 
-    lodev="$(losetup --find --show "$img" 2>/dev/null)" || {
-        rmdir "$mnt"
-        log "losetup failed – skipping vendor image patch"
-        return 1
-    }
+    local method="" lodev=""
 
-    if ! mount -t ext4 -o rw "$lodev" "$mnt" 2>/dev/null; then
-        losetup --detach "$lodev" 2>/dev/null || true
-        rmdir "$mnt"
-        log "mount failed for vendor.img – skipping vendor image patch"
-        return 1
+    # ── Method 1: losetup + mount ──────────────────────────────────────────────
+    if lodev="$(losetup --find --show "$work_img" 2>/dev/null)"; then
+        if mount -t ext4 -o rw "$lodev" "$mnt" 2>/dev/null; then
+            method="loop"
+        else
+            losetup --detach "$lodev" 2>/dev/null || true
+            lodev=""
+        fi
     fi
 
-    local prop_path="${mnt}/build.prop"
-    if [[ ! -f "$prop_path" ]]; then
-        umount "$mnt"; losetup --detach "$lodev" 2>/dev/null; rmdir "$mnt"
-        log "build.prop not found in vendor.img root – skipping"
-        return 1
+    # ── Method 2: fuse2fs ──────────────────────────────────────────────────────
+    if [[ -z "$method" ]] && command -v fuse2fs &>/dev/null; then
+        if fuse2fs -o fakeroot,rw "$work_img" "$mnt" 2>/dev/null; then
+            method="fuse2fs"
+        fi
     fi
 
-    local n
-    n="$(_apply_prop_patch "$json_file" "$prop_path" "$prop_path" "$filter")"
+    # ── Methods 1 & 2: edit the mounted file, then unmount ────────────────────
+    if [[ -n "$method" ]]; then
+        local prop_path="${mnt}/build.prop"
+        local ok=0
+        if [[ -f "$prop_path" ]]; then
+            local n
+            n="$(_apply_prop_patch "$json_file" "$prop_path" "$prop_path" "$filter")"
+            ok=1
+        fi
+        sync
+        if [[ "$method" == "fuse2fs" ]]; then
+            fusermount -u "$mnt" 2>/dev/null || umount "$mnt" 2>/dev/null || true
+        else
+            umount "$mnt" 2>/dev/null || true
+            losetup --detach "$lodev" 2>/dev/null || true
+        fi
+        rmdir "$mnt" 2>/dev/null || true
+        if [[ "$ok" -eq 1 ]]; then
+            cp "$work_img" "$img"
+            rm -f "$work_img"
+            log "vendor.img build.prop: patched ${n} props (${method})"
+            return 0
+        fi
+    else
+        rmdir "$mnt" 2>/dev/null || true
+    fi
 
-    sync
-    umount "$mnt"
-    losetup --detach "$lodev" 2>/dev/null || true
-    rmdir "$mnt"
+    # ── Method 3: e2cp (e2tools) ──────────────────────────────────────────────
+    if command -v e2cp &>/dev/null; then
+        local orig_tmp patched_tmp
+        orig_tmp="$(mktemp /tmp/waydroid-vnd-orig-XXXXXX.prop)"
+        patched_tmp="$(mktemp /tmp/waydroid-vnd-patched-XXXXXX.prop)"
+        if e2cp "${work_img}:/build.prop" "$orig_tmp" 2>/dev/null; then
+            local n
+            n="$(_apply_prop_patch "$json_file" "$orig_tmp" "$patched_tmp" "$filter")"
+            if e2cp "$patched_tmp" "${work_img}:/build.prop" 2>/dev/null; then
+                cp "$work_img" "$img"
+                rm -f "$work_img" "$orig_tmp" "$patched_tmp"
+                log "vendor.img build.prop: patched ${n} props (e2cp)"
+                return 0
+            fi
+        fi
+        rm -f "$orig_tmp" "$patched_tmp"
+    fi
 
-    log "vendor.img build.prop: patched ${n} props (loop-mounted, in-place)"
+    rm -f "$work_img"
+    log "vendor.img patch: all methods failed – vendor props rely on property_source_order override only"
+    return 1
 }
 
 # ── Patch waydroid_base.prop (replace-or-append, fallback) ───────────────────

@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 # install.sh — Waydroid installer
 #
-# Installs Waydroid, initialises the container with stock LineageOS images
-# (downloaded by waydroid itself), then layers NDK translation, Widevine L3,
-# and optionally Google Play (GApps) as overlay modules.
-#
-# Approach follows casualsnek/waydroid_script: base images stay unmodified;
-# extras are applied via /var/lib/waydroid/overlay/ and activated with
-# `waydroid upgrade --offline`.
+# Downloads custom LineageOS 18.1 images from GitHub Releases, places them in
+# the waydroid preinstalled-images path, initialises the container, then layers
+# NDK translation and Widevine L3 as overlay modules (casualsnek style).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/install.sh \
@@ -16,7 +12,8 @@
 #   sudo bash install.sh [OPTIONS]
 #
 # Options:
-#   --variant gapps|vanilla   Install with or without Google Play (default: vanilla)
+#   --variant gapps|vanilla   Image variant (default: gapps)
+#   --release <tag>           Specific release tag (default: latest)
 #   --yes                     Non-interactive; accept all prompts
 #   --help                    Show this help
 #
@@ -24,6 +21,9 @@
 set -euo pipefail
 
 # ── Constants ──────────────────────────────────────────────────────────────────
+readonly RELEASE_REPO="chr0mx/waydroid-customizer"
+readonly RELEASE_API="https://api.github.com/repos/${RELEASE_REPO}/releases/latest"
+readonly RELEASE_BASE="https://github.com/${RELEASE_REPO}/releases/download"
 
 # NDK translation — Android 11 x86_64 (supremegamers prebuilt, commit-pinned)
 readonly NDK_URL="https://github.com/supremegamers/vendor_google_proprietary_ndk_translation-prebuilt/archive/9324a8914b649b885dad6f2bfd14a67e5d1520bf.zip"
@@ -33,10 +33,7 @@ readonly NDK_MD5="c9572672d1045594448068079b34c350"
 readonly WV_URL="https://github.com/supremegamers/vendor_google_proprietary_widevine-prebuilt/archive/48d1076a570837be6cdce8252d5d143363e37cc1.zip"
 readonly WV_MD5="f587b8859f9071da4bca6cea1b9bed6a"
 
-# OpenGApps pico — Android 11 x86_64
-readonly GAPPS_URL="https://sourceforge.net/projects/opengapps/files/x86_64/20220503/open_gapps-x86_64-11.0-pico-20220503.zip/download"
-readonly GAPPS_MD5="5a6d242be34ad1acf92899c7732afa1b"
-
+readonly IMAGES_DIR="/usr/share/waydroid-extra/images"
 readonly OVERLAY_SYS="/var/lib/waydroid/overlay/system"
 readonly OVERLAY_VND="/var/lib/waydroid/overlay/vendor"
 readonly WAYDROID_CFG="/var/lib/waydroid/waydroid.cfg"
@@ -44,7 +41,8 @@ readonly CACHE_DIR="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/waydroid-customizer
 readonly TMP_DIR="/tmp/waydroid-install-$$"
 
 # ── Globals ────────────────────────────────────────────────────────────────────
-VARIANT="vanilla"
+VARIANT="gapps"
+RELEASE_TAG=""
 YES=0
 DISTRO_FAMILY=""  # set by preflight()
 
@@ -61,11 +59,17 @@ require_cmd() {
     command -v "$cmd" &>/dev/null || die "'$cmd' not found.${hint:+ Hint: $hint}"
 }
 
-_md5() { md5sum "$1" | awk '{print $1}'; }
+_sha256() { sha256sum "$1" | awk '{print $1}'; }
+_md5()    { md5sum    "$1" | awk '{print $1}'; }
+
+_json_field() {
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(${1})" 2>/dev/null
+}
 
 # Write a key=value into waydroid.cfg [properties] section.
 _set_waydroid_prop() {
     local key="$1" val="$2"
+    [[ -f "$WAYDROID_CFG" ]] || return 0
     python3 - "$key" "$val" "$WAYDROID_CFG" <<'PYEOF'
 import sys, configparser
 key, val, cfg_path = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -79,21 +83,10 @@ with open(cfg_path, "w") as f:
 PYEOF
 }
 
-# ── Download with retry + MD5 validation ──────────────────────────────────────
+# ── Download with retry ────────────────────────────────────────────────────────
 _download() {
-    local url="$1" dest="$2" expected_md5="${3:-}"
-
+    local url="$1" dest="$2"
     mkdir -p "$(dirname "$dest")"
-
-    # Cache hit
-    if [[ -f "$dest" && -n "$expected_md5" ]]; then
-        if [[ "$(_md5 "$dest")" == "$expected_md5" ]]; then
-            log_info "Cache hit: $(basename "$dest")"
-            return 0
-        fi
-        log_warn "Cached file MD5 mismatch — redownloading."
-        rm -f "$dest"
-    fi
 
     local attempt=0 wait=5
     while (( attempt < 3 )); do
@@ -101,12 +94,9 @@ _download() {
         log_info "Downloading $(basename "$dest") (attempt $attempt/3)…"
         if curl -fL --http1.1 --progress-bar --connect-timeout 30 --max-time 900 \
                 "$url" -o "$dest" 2>&1; then
-            if [[ -n "$expected_md5" && "$(_md5 "$dest")" != "$expected_md5" ]]; then
-                log_warn "MD5 mismatch — retrying."
-                rm -f "$dest"
-            else
-                return 0
-            fi
+            [[ -s "$dest" ]] && return 0
+            log_warn "Downloaded file is empty."
+            rm -f "$dest"
         fi
         log_warn "Download failed. Retrying in ${wait}s…"
         sleep "$wait"; (( wait *= 2 ))
@@ -114,11 +104,24 @@ _download() {
     die "Download failed after 3 attempts: $url"
 }
 
+# Download + verify SHA256 checksum file.
+_download_verified() {
+    local url="$1" dest="$2"
+    _download "$url"          "$dest"
+    _download "${url}.sha256" "${dest}.sha256"
+
+    local expected actual
+    expected="$(awk '{print $1}' "${dest}.sha256")"
+    actual="$(_sha256 "$dest")"
+    [[ "$expected" == "$actual" ]] \
+        || die "SHA256 mismatch for $(basename "$dest"). Expected: $expected  Got: $actual"
+    log_ok "Verified: $(basename "$dest")"
+}
+
 # ── Preflight ─────────────────────────────────────────────────────────────────
 preflight() {
     [[ "$(id -u)" -eq 0 ]] || die "Run as root: sudo bash $0 $*"
 
-    # Non-interactive stdin (piped via curl) → auto-yes
     if [[ ! -t 0 ]]; then
         log_info "Non-interactive stdin detected — enabling --yes mode."
         YES=1
@@ -143,19 +146,26 @@ preflight() {
     log_info "Detected distro family: ${DISTRO_FAMILY} (${pretty})"
 }
 
-# ── Dependency installation ────────────────────────────────────────────────────
+# ── Dependencies ──────────────────────────────────────────────────────────────
 install_deps() {
     local pkgs=()
-    command -v curl  &>/dev/null || pkgs+=(curl)
-    command -v unzip &>/dev/null || pkgs+=(unzip)
+    command -v curl    &>/dev/null || pkgs+=(curl)
+    command -v unzip   &>/dev/null || pkgs+=(unzip)
     command -v python3 &>/dev/null || pkgs+=(python3)
-    [[ "$VARIANT" == "gapps" ]] && ! command -v lzip &>/dev/null && pkgs+=(lzip)
+
+    # e2fsck/simg2img needed for sparse-image conversion
+    command -v e2fsck  &>/dev/null || pkgs+=(e2fsprogs)
+    case "$DISTRO_FAMILY" in
+        debian) command -v simg2img &>/dev/null || pkgs+=(android-sdk-libsparse-utils) ;;
+        fedora) command -v simg2img &>/dev/null || pkgs+=(android-tools) ;;
+        arch)   command -v simg2img &>/dev/null || pkgs+=(android-tools) ;;
+    esac
 
     [[ "${#pkgs[@]}" -eq 0 ]] && return 0
     log_info "Installing dependencies: ${pkgs[*]}"
     case "$DISTRO_FAMILY" in
         debian) apt-get install -y -qq "${pkgs[@]}" ;;
-        fedora) dnf install -y -q "${pkgs[@]}" ;;
+        fedora) dnf install -y -q  "${pkgs[@]}" ;;
         arch)   pacman -S --noconfirm --needed "${pkgs[@]}" ;;
     esac
 }
@@ -172,17 +182,13 @@ install_waydroid() {
         debian)
             apt-get update -qq
             apt-get install -y -qq curl ca-certificates gnupg
-
-            # Add waydroid repo
             curl -fsSL --http1.1 https://repo.waydro.id/waydroid.gpg \
                 | gpg --dearmor -o /usr/share/keyrings/waydroid.gpg
-
             local codename
             codename="$(. /etc/os-release 2>/dev/null; \
                 printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-focal}}")"
             echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ ${codename} main" \
                 > /etc/apt/sources.list.d/waydroid.list
-
             apt-get update -qq
             apt-get install -y -qq waydroid
             ;;
@@ -195,55 +201,114 @@ install_waydroid() {
         arch)
             local aur_cmd
             aur_cmd="$(command -v yay 2>/dev/null || command -v paru 2>/dev/null || true)"
-            [[ -n "$aur_cmd" ]] || die "AUR helper (yay or paru) is required on Arch. Install one first."
+            [[ -n "$aur_cmd" ]] || die "AUR helper (yay or paru) is required on Arch."
             local real_user="${SUDO_USER:-${USER:-root}}"
             sudo -u "$real_user" "$aur_cmd" -S --noconfirm waydroid
             ;;
     esac
-
     log_ok "Waydroid installed."
 }
 
-# ── Waydroid init ─────────────────────────────────────────────────────────────
-init_waydroid() {
-    # Enable overlayfs so NDK/Widevine/GApps don't modify the base images.
-    # waydroid prop set may not be available in all versions; fall back to
-    # direct cfg edit.
-    if ! waydroid prop set mount_overlays 1 2>/dev/null; then
-        if [[ -f "$WAYDROID_CFG" ]]; then
-            _set_waydroid_prop "mount_overlays" "True"
-        fi
-    fi
-
-    log_info "Initialising Waydroid container (this downloads base images)…"
-
-    # waydroid init downloads LineageOS images from waydroid's OTA server.
-    # -f forces re-init if already initialised.
-    if ! waydroid init -f 2>&1 | tee /dev/stderr | grep -qi "error\|fail"; then
-        log_ok "Waydroid initialised."
+# ── Resolve release tag ────────────────────────────────────────────────────────
+resolve_release() {
+    if [[ -n "$RELEASE_TAG" ]]; then
+        log_info "Using release: ${RELEASE_TAG}"
         return 0
     fi
+    log_info "Fetching latest release from ${RELEASE_REPO}…"
+    local api_response
+    api_response="$(curl -fsSL --http1.1 --connect-timeout 15 "$RELEASE_API" 2>/dev/null)" \
+        || die "GitHub API request failed."
+    RELEASE_TAG="$(printf '%s' "$api_response" | _json_field "d['tag_name']")"
+    [[ -n "$RELEASE_TAG" ]] || die "Could not parse release tag from GitHub API."
+    log_ok "Latest release: ${RELEASE_TAG}"
+}
 
-    # Some waydroid versions require explicit OTA URLs when no preinstalled
-    # images are found.  Use the official Android 11 vanilla OTAs.
-    log_warn "Plain init failed — retrying with explicit OTA URLs."
-    local sys_ota="https://ota.waydroid.org/android11/lineage-18.1/VANILLA/SYSTEM-LATEST.zip"
-    local vnd_ota="https://ota.waydroid.org/android11/lineage-18.1/MAINLINE/VENDOR-LATEST.zip"
-    waydroid init -f -s "$sys_ota" -v "$vnd_ota" \
-        || die "waydroid init failed. Check network connectivity and waydroid logs."
+# ── Download & install custom images ─────────────────────────────────────────
+install_images() {
+    local date_tag="${RELEASE_TAG#v}"   # v20250628-custom → 20250628-custom
+    date_tag="${date_tag%%-*}"          # 20250628-custom  → 20250628
 
+    local variant_upper="${VARIANT^^}"  # gapps → GAPPS
+    local arch="waydroid_x86_64"
+
+    local sys_name="waydroid-custom-${date_tag}-${variant_upper}-${arch}-system.zip"
+    local vnd_name="waydroid-custom-${date_tag}-MAINLINE-${arch}-vendor.zip"
+    local base_url="${RELEASE_BASE}/${RELEASE_TAG}"
+
+    local sys_zip="${CACHE_DIR}/${sys_name}"
+    local vnd_zip="${CACHE_DIR}/${vnd_name}"
+
+    _download_verified "${base_url}/${sys_name}" "$sys_zip"
+    _download_verified "${base_url}/${vnd_name}" "$vnd_zip"
+
+    log_info "Extracting images to ${IMAGES_DIR}…"
+    mkdir -p "$IMAGES_DIR"
+
+    # Extract and convert sparse → raw ext4 if needed
+    _extract_image "$sys_zip" "${IMAGES_DIR}/system.img"
+    _extract_image "$vnd_zip" "${IMAGES_DIR}/vendor.img"
+
+    log_ok "Images installed to ${IMAGES_DIR}."
+}
+
+# Extract the .img from a release zip, converting from sparse ext4 if needed.
+_extract_image() {
+    local zip_file="$1" dest_img="$2"
+    local img_name
+    img_name="$(basename "$dest_img")"
+
+    local extract_dir="${TMP_DIR}/img-extract"
+    mkdir -p "$extract_dir"
+
+    log_info "Extracting ${img_name}…"
+    unzip -q "$zip_file" "*.img" -d "$extract_dir"
+
+    local raw_img
+    raw_img="$(find "$extract_dir" -name "*.img" | head -1)"
+    [[ -f "$raw_img" ]] || die "No .img found inside $(basename "$zip_file")."
+
+    # Detect Android sparse image (magic: 3aff26ed)
+    local magic
+    magic="$(od -A n -t x1 -N 4 "$raw_img" | tr -d ' \n')"
+    if [[ "$magic" == "3aff26ed" ]]; then
+        log_info "Converting sparse → raw ext4…"
+        simg2img "$raw_img" "$dest_img"
+    else
+        mv "$raw_img" "$dest_img"
+    fi
+
+    rm -rf "$extract_dir"
+}
+
+# ── Init waydroid container ───────────────────────────────────────────────────
+init_waydroid() {
+    # Enable overlayfs so NDK/Widevine stay separate from base images.
+    waydroid prop set mount_overlays 1 2>/dev/null \
+        || _set_waydroid_prop "mount_overlays" "True"
+
+    log_info "Initialising Waydroid container…"
+    # Images are in IMAGES_DIR (a preinstalled_images_path waydroid checks),
+    # so waydroid init needs no -s/-v OTA flags.
+    waydroid init -f \
+        || die "waydroid init failed. Check logs: sudo journalctl -u waydroid-container"
     log_ok "Waydroid initialised."
 }
 
 # ── Overlay helpers ────────────────────────────────────────────────────────────
-
-# Download a prebuilt zip, locate its prebuilts/ directory, and copy it into
-# an overlay partition directory.
 _install_prebuilt_overlay() {
     local url="$1" md5="$2" cache_name="$3" overlay_dir="$4"
 
     local cache_file="${CACHE_DIR}/${cache_name}"
-    _download "$url" "$cache_file" "$md5"
+
+    # Cache hit check
+    if [[ -f "$cache_file" && "$(_md5 "$cache_file")" == "$md5" ]]; then
+        log_info "Cache hit: ${cache_name}"
+    else
+        _download "$url" "$cache_file"
+        [[ "$(_md5 "$cache_file")" == "$md5" ]] \
+            || die "MD5 mismatch for ${cache_name}."
+    fi
 
     local extract_dir="${TMP_DIR}/${cache_name%.zip}"
     mkdir -p "$extract_dir" "$overlay_dir"
@@ -253,8 +318,7 @@ _install_prebuilt_overlay() {
 
     local prebuilts
     prebuilts="$(find "$extract_dir" -maxdepth 2 -name "prebuilts" -type d | head -1)"
-    [[ -d "$prebuilts" ]] \
-        || die "prebuilts/ directory not found inside ${cache_name}."
+    [[ -d "$prebuilts" ]] || die "prebuilts/ not found inside ${cache_name}."
 
     cp -af "${prebuilts}/." "$overlay_dir/"
     rm -rf "$extract_dir"
@@ -263,11 +327,8 @@ _install_prebuilt_overlay() {
 # ── NDK translation ────────────────────────────────────────────────────────────
 install_ndk() {
     log_info "Installing libndk_translation (ARM → x86 bridge)…"
+    _install_prebuilt_overlay "$NDK_URL" "$NDK_MD5" "ndk-translation.zip" "$OVERLAY_SYS"
 
-    _install_prebuilt_overlay \
-        "$NDK_URL" "$NDK_MD5" "ndk-translation.zip" "$OVERLAY_SYS"
-
-    # Register ABI list and native bridge in waydroid.cfg
     local -A ndk_props=(
         [ro.product.cpu.abilist]="x86_64,x86,arm64-v8a,armeabi-v7a,armeabi"
         [ro.product.cpu.abilist32]="x86,armeabi-v7a,armeabi"
@@ -290,57 +351,8 @@ install_ndk() {
 # ── Widevine L3 ───────────────────────────────────────────────────────────────
 install_widevine() {
     log_info "Installing Widevine L3…"
-    _install_prebuilt_overlay \
-        "$WV_URL" "$WV_MD5" "widevine.zip" "$OVERLAY_VND"
+    _install_prebuilt_overlay "$WV_URL" "$WV_MD5" "widevine.zip" "$OVERLAY_VND"
     log_ok "Widevine L3 installed."
-}
-
-# ── Google Apps (OpenGApps pico, Android 11 x86_64) ──────────────────────────
-install_gapps() {
-    require_cmd lzip "sudo apt install lzip  /  sudo dnf install lzip"
-    require_cmd tar
-
-    log_info "Installing OpenGApps pico (Android 11 x86_64)…"
-
-    local cache_file="${CACHE_DIR}/opengapps.zip"
-    _download "$GAPPS_URL" "$cache_file" "$GAPPS_MD5"
-
-    local extract_dir="${TMP_DIR}/gapps"
-    mkdir -p "$extract_dir"
-
-    # OpenGApps pico contains Core/*.tar.lz — one per GApps component.
-    unzip -q "$cache_file" "Core/*.tar.lz" -d "$extract_dir"
-
-    # GmsCore_stub is a placeholder; real GmsCore downloads from Play Store.
-    # PartnerSetupGoogle is not needed for bare GApps.
-    local -A skip=([GmsCore_stub]=1 [PartnerSetupGoogle]=1)
-
-    for lz_file in "${extract_dir}/Core/"*.tar.lz; do
-        local name
-        name="$(basename "$lz_file" .tar.lz)"
-        [[ "${skip[$name]+set}" ]] && continue
-
-        log_info "  Extracting ${name}…"
-        local tar_file="${lz_file%.lz}"
-        lzip -d -k "$lz_file" -o "$tar_file"
-
-        local comp_dir="${extract_dir}/${name}"
-        mkdir -p "$comp_dir"
-        tar -xf "$tar_file" -C "$comp_dir"
-        rm -f "$tar_file"
-
-        # Copy APKs into priv-app overlay (pico components are all privileged).
-        find "$comp_dir" -name "*.apk" | while IFS= read -r apk; do
-            local apk_name
-            apk_name="$(basename "$apk" .apk)"
-            local dest="${OVERLAY_SYS}/priv-app/${apk_name}"
-            mkdir -p "$dest"
-            cp "$apk" "$dest/"
-        done
-    done
-
-    rm -rf "$extract_dir"
-    log_ok "GApps overlay installed."
 }
 
 # ── Apply overlays ────────────────────────────────────────────────────────────
@@ -350,7 +362,7 @@ apply_overlays() {
         || log_warn "waydroid upgrade --offline returned non-zero (may be harmless)."
 }
 
-# ── Start Waydroid ────────────────────────────────────────────────────────────
+# ── Start ─────────────────────────────────────────────────────────────────────
 start_waydroid() {
     log_info "Enabling and starting waydroid-container service…"
     systemctl enable --now waydroid-container 2>/dev/null || true
@@ -363,15 +375,15 @@ start_waydroid() {
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-# ── Argument parsing ──────────────────────────────────────────────────────────
+# ── Usage ─────────────────────────────────────────────────────────────────────
 usage() {
     cat >&2 <<'EOF'
 Usage: sudo bash install.sh [OPTIONS]
 
 Options:
-  --variant gapps|vanilla   Install with (gapps) or without Google Play
-                            (default: vanilla)
-                            GApps requires lzip: apt install lzip / dnf install lzip
+  --variant gapps|vanilla   Image variant: gapps (with Google Play, default)
+                            or vanilla (no Google Play)
+  --release <tag>           Use a specific release tag (default: latest)
   --yes                     Non-interactive; accept all prompts
   --help                    Show this help
 
@@ -384,6 +396,7 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --variant) VARIANT="${2:-}"; shift 2 ;;
+            --release) RELEASE_TAG="${2:-}"; shift 2 ;;
             --yes|-y)  YES=1; shift ;;
             --help|-h) usage ;;
             *) die "Unknown option: '$1'. Use --help for usage." ;;
@@ -396,10 +409,11 @@ main() {
     preflight
     install_deps
     install_waydroid
+    resolve_release
+    install_images
     init_waydroid
     install_ndk
     install_widevine
-    [[ "$VARIANT" == "gapps" ]] && install_gapps
     apply_overlays
     start_waydroid
 }

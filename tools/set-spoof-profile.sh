@@ -141,13 +141,18 @@ _patch_overlay_build_prop() {
     local json_file="$3"    # profile JSON
     local keys_filter="${4:-}"  # optional: only patch keys matching this prefix
 
-    # Extract build.prop from image without mounting
+    # Extract build.prop from image without mounting.
+    # Try /build.prop first (vendor/traditional layout), then /system/build.prop
+    # (system-as-root layout used by LineageOS 18.1).
     local orig_tmp
     orig_tmp="$(mktemp /tmp/waydroid-orig-build-XXXXXX.prop)"
-    debugfs -R 'cat /build.prop' "$img" > "$orig_tmp" 2>/dev/null \
-        || { rm -f "$orig_tmp"; return 1; }
-
-    [[ -s "$orig_tmp" ]] || { rm -f "$orig_tmp"; return 1; }
+    debugfs -R 'cat /build.prop' "$img" > "$orig_tmp" 2>/dev/null || true
+    if [[ ! -s "$orig_tmp" ]]; then
+        debugfs -R 'cat /system/build.prop' "$img" > "$orig_tmp" 2>/dev/null || true
+    fi
+    if [[ ! -s "$orig_tmp" ]]; then
+        rm -f "$orig_tmp"; return 1
+    fi
 
     mkdir -p "$overlay_dir"
     local dest="${overlay_dir}/build.prop"

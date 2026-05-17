@@ -17,10 +17,9 @@
 #   sudo bash tools/set-spoof-profile.sh --list
 #   sudo bash tools/set-spoof-profile.sh --clear
 #
-# Properties are written to:
-#   - /var/lib/waydroid/waydroid.cfg  [properties]  (persists across waydroid init)
-#   - /var/lib/waydroid/waydroid_base.prop           (immediate effect on next boot)
-# Then activated with 'waydroid upgrade --offline'.
+# Properties are written directly to /var/lib/waydroid/waydroid_base.prop
+# (replace-or-append per key). Waydroid is restarted to apply.
+# Based on: https://github.com/Quackdoc/waydroid-scripts/blob/main/spoof-device.sh
 #
 set -euo pipefail
 
@@ -30,7 +29,6 @@ readonly PROFILES_REMOTE="${REPO_RAW}/modules/spoof/profiles"
 readonly PROFILES_API="https://api.github.com/repos/chr0mx/waydroid-customizer/contents/modules/spoof/profiles"
 
 # ── Waydroid paths ────────────────────────────────────────────────────────────
-WAYDROID_CFG="${WAYDROID_CFG:-/var/lib/waydroid/waydroid.cfg}"
 WAYDROID_BASE_PROP="${WAYDROID_BASE_PROP:-/var/lib/waydroid/waydroid_base.prop}"
 ACTIVE_KEYS_FILE="/var/lib/waydroid/waydroid-spoof-active-keys"
 
@@ -127,37 +125,6 @@ for f in files:
     done <<< "$names"
 }
 
-# ── Write to waydroid.cfg [properties] ───────────────────────────────────────
-_write_to_cfg() {
-    local json_file="$1"
-    python3 - "$json_file" "$WAYDROID_CFG" "$ACTIVE_KEYS_FILE" <<'PYEOF'
-import sys, json, configparser
-
-json_file, cfg_path, keys_out = sys.argv[1], sys.argv[2], sys.argv[3]
-
-profile = json.load(open(json_file))
-props   = profile.get("props", {})
-
-cfg = configparser.ConfigParser()
-cfg.read(cfg_path)
-if "properties" not in cfg:
-    cfg["properties"] = {}
-
-injected = []
-for key, val in props.items():
-    cfg["properties"][key] = str(val)
-    injected.append(key)
-
-with open(cfg_path, "w") as f:
-    cfg.write(f)
-
-with open(keys_out, "w") as f:
-    f.write("\n".join(injected) + "\n")
-
-print(f"[spoof] cfg: wrote {len(injected)} props", file=sys.stderr)
-PYEOF
-}
-
 # ── Write to waydroid_base.prop (replace-or-append) ──────────────────────────
 _write_to_base_prop() {
     local json_file="$1"
@@ -192,32 +159,6 @@ with open(prop_path, "w") as f:
     f.writelines(lines)
 
 print(f"[spoof] base.prop: upserted {len(props)} props", file=sys.stderr)
-PYEOF
-}
-
-# ── Remove props from waydroid.cfg ────────────────────────────────────────────
-_remove_from_cfg() {
-    python3 - "$ACTIVE_KEYS_FILE" "$WAYDROID_CFG" <<'PYEOF'
-import sys, configparser
-
-keys_file, cfg_path = sys.argv[1], sys.argv[2]
-
-with open(keys_file) as f:
-    keys = [l.strip() for l in f if l.strip()]
-
-cfg = configparser.ConfigParser()
-cfg.read(cfg_path)
-
-removed = 0
-if "properties" in cfg:
-    for key in keys:
-        if cfg.remove_option("properties", key):
-            removed += 1
-
-with open(cfg_path, "w") as f:
-    cfg.write(f)
-
-print(f"[spoof] cfg: removed {removed} props", file=sys.stderr)
 PYEOF
 }
 
@@ -257,8 +198,8 @@ PYEOF
 apply_profile() {
     local profile="$1"
 
-    [[ -f "$WAYDROID_CFG" ]] \
-        || die "waydroid.cfg not found at ${WAYDROID_CFG}. Run: sudo waydroid init"
+    [[ -f "$WAYDROID_BASE_PROP" ]] \
+        || die "waydroid_base.prop not found at ${WAYDROID_BASE_PROP}. Run: sudo waydroid init"
 
     local json
     json="$(_resolve_profile_json "$profile")"
@@ -268,18 +209,11 @@ apply_profile() {
     systemctl stop waydroid-container 2>/dev/null || true
     sleep 1
 
-    log "Writing to waydroid.cfg [properties]…"
-    _write_to_cfg "$json"
-
     log "Writing to waydroid_base.prop…"
     _write_to_base_prop "$json"
 
     # Clean up temp file if we fetched remotely
     [[ -z "$PROFILES_LOCAL" ]] && rm -f "$json" || true
-
-    log "Activating with waydroid upgrade --offline…"
-    waydroid upgrade --offline 2>/dev/null \
-        || log "waydroid upgrade returned non-zero (may be harmless)."
 
     log "Starting Waydroid container…"
     systemctl start waydroid-container 2>/dev/null || true
@@ -291,9 +225,6 @@ apply_profile() {
 
 # ── Clear profile ─────────────────────────────────────────────────────────────
 clear_profile() {
-    [[ -f "$WAYDROID_CFG" ]] \
-        || die "waydroid.cfg not found at ${WAYDROID_CFG}."
-
     if [[ ! -f "$ACTIVE_KEYS_FILE" ]]; then
         log "No active spoof profile (${ACTIVE_KEYS_FILE} missing). Nothing to do."
         return 0
@@ -304,17 +235,10 @@ clear_profile() {
     systemctl stop waydroid-container 2>/dev/null || true
     sleep 1
 
-    log "Removing injected props from waydroid.cfg…"
-    _remove_from_cfg
-
     log "Removing injected props from waydroid_base.prop…"
     _remove_from_base_prop
 
     rm -f "$ACTIVE_KEYS_FILE"
-
-    log "Activating with waydroid upgrade --offline…"
-    waydroid upgrade --offline 2>/dev/null \
-        || log "waydroid upgrade returned non-zero (may be harmless)."
 
     log "Starting Waydroid container…"
     systemctl start waydroid-container 2>/dev/null || true

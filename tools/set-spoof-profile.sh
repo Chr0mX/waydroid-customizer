@@ -205,8 +205,8 @@ apply_profile() {
     json="$(_resolve_profile_json "$profile")"
 
     log "Stopping Waydroid…"
-    waydroid session stop 2>/dev/null || true
-    systemctl stop waydroid-container 2>/dev/null || true
+    ( cd / && waydroid session stop 2>/dev/null ) || true
+    ( cd / && systemctl stop waydroid-container 2>/dev/null ) || true
     sleep 1
 
     log "Writing to waydroid_base.prop…"
@@ -216,11 +216,11 @@ apply_profile() {
     [[ -z "$PROFILES_LOCAL" ]] && rm -f "$json" || true
 
     log "Starting Waydroid container…"
-    systemctl start waydroid-container 2>/dev/null || true
+    ( cd / && systemctl start waydroid-container 2>/dev/null ) || true
 
     ok "Profile '${profile}' applied."
     echo "  Start UI : waydroid show-full-ui" >&2
-    echo "  Revert   : $(basename "$0") --clear" >&2
+    echo "  Revert   : curl -fsSL ${REPO_RAW}/tools/set-spoof-profile.sh | sudo bash -s -- --clear" >&2
 }
 
 # ── Clear profile ─────────────────────────────────────────────────────────────
@@ -231,8 +231,8 @@ clear_profile() {
     fi
 
     log "Stopping Waydroid…"
-    waydroid session stop 2>/dev/null || true
-    systemctl stop waydroid-container 2>/dev/null || true
+    ( cd / && waydroid session stop 2>/dev/null ) || true
+    ( cd / && systemctl stop waydroid-container 2>/dev/null ) || true
     sleep 1
 
     log "Removing injected props from waydroid_base.prop…"
@@ -241,7 +241,7 @@ clear_profile() {
     rm -f "$ACTIVE_KEYS_FILE"
 
     log "Starting Waydroid container…"
-    systemctl start waydroid-container 2>/dev/null || true
+    ( cd / && systemctl start waydroid-container 2>/dev/null ) || true
 
     ok "Spoof cleared. Default identity will be used."
 }

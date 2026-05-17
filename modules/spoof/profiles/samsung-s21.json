@@ -3,6 +3,7 @@
   "id": "samsung-s21",
   "description": "Samsung Galaxy S21 Snapdragon (SM-G991U) – Android 11 / SDK 30",
   "props": {
+    "ro.product.property_source_order": "system,system_ext,product,odm,vendor",
     "ro.product.brand": "samsung",
     "ro.product.manufacturer": "samsung",
     "ro.product.name": "o1qsqw",

@@ -3,6 +3,7 @@
   "id": "pixel-4a",
   "description": "Google Pixel 4a (sunfish) – Android 11 / SDK 30",
   "props": {
+    "ro.product.property_source_order": "system,system_ext,product,odm,vendor",
     "ro.product.brand": "google",
     "ro.product.manufacturer": "Google",
     "ro.product.name": "sunfish",

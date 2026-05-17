@@ -3,6 +3,7 @@
   "id": "generic-x86",
   "description": "No device identity change – only hides LineageOS markers",
   "props": {
+    "ro.product.property_source_order": "system,system_ext,product,odm,vendor",
     "ro.build.tags": "release-keys",
     "ro.build.type": "user",
     "ro.vendor.build.tags": "release-keys",

@@ -3,6 +3,7 @@
   "id": "pixel-5",
   "description": "Google Pixel 5 (redfin) – Android 11 / SDK 30",
   "props": {
+    "ro.product.property_source_order": "system,system_ext,product,odm,vendor",
     "ro.product.brand": "google",
     "ro.product.manufacturer": "Google",
     "ro.product.name": "redfin",

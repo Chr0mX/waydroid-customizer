@@ -166,9 +166,10 @@ json_file, orig_path, dest_path, keys_filter = \
 profile = json.load(open(json_file))
 props   = profile.get("props", {})
 
-# Optionally filter to a subset of keys (e.g. only "ro.product.vendor.")
+# Optionally filter to a subset of keys (comma-separated prefixes).
 if keys_filter:
-    props = {k: v for k, v in props.items() if k.startswith(keys_filter)}
+    prefixes = tuple(p for p in keys_filter.split(',') if p)
+    props = {k: v for k, v in props.items() if k.startswith(prefixes)}
 
 with open(orig_path, "r", errors="replace") as f:
     lines = f.readlines()
@@ -292,7 +293,8 @@ apply_profile() {
 
     if vnd_img="$(_find_img vendor.img 2>/dev/null)"; then
         log "Patching vendor overlay build.prop from ${vnd_img}…"
-        _patch_overlay_build_prop "$vnd_img" "$OVERLAY_VND" "$json" "ro.product.vendor." \
+        _patch_overlay_build_prop "$vnd_img" "$OVERLAY_VND" "$json" \
+            "ro.product.vendor.,ro.soc.,ro.hardware,ro.vendor.build.,ro.boot." \
             || log "vendor overlay patch failed (non-fatal)"
     fi
 

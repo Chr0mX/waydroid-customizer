@@ -79,7 +79,7 @@ curl -fsSL .../tools/install.sh | sudo bash -s -- --variant vanilla --overlay-mo
 |---------|--------|---------|
 | `pixel-5` | Google Pixel 5 | 11 |
 | `pixel-4a` | Google Pixel 4a | 11 |
-| `samsung-s21` | Samsung Galaxy S21 | 11 |
+| `samsung-s21` | Samsung Galaxy S21 Snapdragon (SM-G991U) | 11 |
 | `generic-x86` | Minimal / passthrough | — |
 | `none` | Skip profile injection | — |
 
@@ -405,25 +405,99 @@ a PR (`auto/upstream-<date>`). Merging the PR triggers `build.yml`.
 
 ## Runtime profile switching (host)
 
-Change device identity on a running Waydroid instance without rebuilding images:
+Change device identity on a running Waydroid instance without rebuilding images.
+Works from a cloned repo or directly via `curl` — no clone required.
+
+### One-liner (curl)
 
 ```bash
 # List available profiles
-bash tools/set-spoof-profile.sh --list
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+  | sudo bash -s -- --list
 
-# Apply a profile (writes /var/lib/waydroid/data/waydroid-spoof/active.prop)
-sudo bash tools/set-spoof-profile.sh pixel-4a
+# Apply a profile
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+  | sudo bash -s -- samsung-s21
 
-# Restart to activate
-waydroid session stop && waydroid session start
+# Apply, restart Waydroid, and verify live props match the profile
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+  | sudo bash -s -- samsung-s21 --apply-and-check
 
-# Revert to build-time identity
+# Revert all patches and restore originals
+curl -fsSL https://raw.githubusercontent.com/chr0mx/waydroid-customizer/main/tools/set-spoof-profile.sh \
+  | sudo bash -s -- --clear
+```
+
+### Local (cloned repo)
+
+```bash
+# Apply only
+sudo bash tools/set-spoof-profile.sh samsung-s21
+
+# Apply then verify live props (container must already be running)
+sudo bash tools/set-spoof-profile.sh samsung-s21 --check
+
+# Apply, restart container with readiness poll, then verify
+sudo bash tools/set-spoof-profile.sh samsung-s21 --apply-and-check
+
+# Flags can be combined
+sudo bash tools/set-spoof-profile.sh samsung-s21 --restart --check
+
+# List / clear
+sudo bash tools/set-spoof-profile.sh --list
 sudo bash tools/set-spoof-profile.sh --clear
 ```
 
-`active.prop` is read by `waydroid-spoof-loader` (oneshot init service) on
-every boot. The build-time identity from `build.prop` acts as the fallback when
-no `active.prop` is present.
+### CLI flags
+
+| Flag | Behaviour |
+|------|-----------|
+| `--list` | Print available profiles and exit |
+| `--clear` | Remove all patches, restore `vendor.img` from backup, restart |
+| `--check` | After applying, query live `getprop` and compare to profile JSON. Exits non-zero on any mismatch or identity leak |
+| `--restart` | After applying, stop + start the container and poll until Android reports ready (60 s timeout) |
+| `--apply-and-check` | Shorthand for `--restart --check` |
+
+### Patching order
+
+The script applies patches in three layers:
+
+| Layer | Mechanism | Scope |
+|-------|-----------|-------|
+| **vendor.img** (primary) | Loop-mount → edit in-place; falls back to `fuse2fs` then `e2cp` | `ro.product.vendor.*`, `ro.soc.*`, `ro.hardware`, `ro.boot.*` |
+| **system overlay** | `/var/lib/waydroid/overlay/system/build.prop` shadows the image copy | All profile props + `ro.product.property_source_order` |
+| **waydroid_base.prop** | Fallback / belt-and-suspenders | All profile props |
+
+`ro.product.property_source_order=system,…,vendor` is injected via the system
+overlay so Android's property synthesis picks up the spoofed `ro.product.system.*`
+values even when `vendor.img` patching is unavailable.
+
+A backup of `vendor.img` is saved as `vendor.img.spoof.bak` on first run.
+`--clear` restores from this backup automatically.
+
+### Verification output (`--check`)
+
+```
+[check] ── Spoof verification: samsung-s21 ──
+
+[check]  Key                                          Expected               Actual                 Status
+[check]  ──────────────────────────────────────────────────────────────────────────────────────────────────
+[check]  Critical keys:
+[check]  ro.product.brand                             samsung                samsung                PASS
+[check]  ro.product.manufacturer                      samsung                samsung                PASS
+[check]  ro.product.model                             SM-G991U               SM-G991U               PASS
+[check]  ro.build.fingerprint                         samsung/o1qsqw/o1q:…   samsung/o1qsqw/o1q:…   PASS
+[check]  …
+[check]  Optional keys:
+[check]  ro.hardware                                  qcom                   qcom                   PASS
+[check]  …
+[check]  Leak scan  (pattern: pixel|lineage|waydroid|sdk_gphone|generic_x86|emulator|test-keys)
+[check]    clean – no identity leaks detected
+
+[check]  RESULT: PASSED  (17/17 critical keys matched, 0 optional mismatch(es), 0 leaks)
+```
+
+Exits `0` on full pass, `1` if any critical key mismatches or a leak is detected.
 
 ---
 
